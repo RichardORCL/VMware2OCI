@@ -505,9 +505,13 @@ def resolve_presentation_template(
     scenario_id = str(business_scenario.get("id") or "")
     recommendation = str(assessor_recommendation or "").strip().lower()
     selected_scenario = str(active_scenario or "").strip().lower()
-    if scenario_id in {"capacity", "dr"}:
+    if scenario_id in {"ocvs", "capacity", "dr"}:
         template_id = scenario_id
-        scenario_name = str(business_scenario.get("name") or "Assessment")
+        scenario_name = {
+            "ocvs": "Oracle Cloud VMware Solution",
+            "capacity": "Capacity Expansion with OCVS",
+            "dr": "Disaster Recovery",
+        }[scenario_id]
     elif selected_scenario in {"native", "ocvs", "hybrid"}:
         template_id = "compute" if selected_scenario == "native" else selected_scenario
         scenario_name = {
@@ -11134,7 +11138,7 @@ def step4() -> str:
         setup_scenario_id = str(business_scenario.get("id", "")).strip().lower()
         presentation_scenario_id = (
             setup_scenario_id
-            if setup_scenario_id in {"capacity", "dr"}
+            if setup_scenario_id in {"ocvs", "capacity", "dr"}
             else submitted_presentation_scenario or setup_scenario_id
         )
         build_customer_presentation_pptx(
@@ -11144,7 +11148,7 @@ def step4() -> str:
             business_scenario={
                 **business_scenario,
                 # The selected Step 3 workspace is the export source of truth.
-                # Dedicated Capacity/DR exports retain their Setup scenario IDs.
+                # Dedicated OCVS exports retain their Setup scenario IDs.
                 "id": presentation_scenario_id,
                 "name": presentation_scenario_name,
             },

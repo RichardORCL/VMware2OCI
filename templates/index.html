@@ -74,8 +74,8 @@
       background: var(--workspace-primary-soft);
     }
     .business-scenario-card.is-selected {
-      border: 2px solid var(--workspace-primary);
-      box-shadow: inset 0 0 0 1px var(--workspace-primary-soft);
+      border: 2px solid #fff;
+      box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.35), 0 0 0 3px rgba(134, 239, 172, 0.65);
     }
     .business-scenario-card__check {
       position: absolute; top: 12px; right: 12px;
@@ -89,8 +89,10 @@
       border-radius: 50%; background: var(--workspace-primary-soft); color: var(--workspace-primary);
       font-size: 20px; font-weight: 800;
     }
-    .business-scenario-card h3 { margin: 0 0 8px; font-size: 15px; line-height: 1.3; }
-    .business-scenario-card p { margin: 0; color: var(--workspace-muted); line-height: 1.42; }
+    .business-scenario-card h3 { margin: 0 0 8px; color: #fff; font-size: 15px; line-height: 1.3; }
+    .business-scenario-card p { margin: 0; color: #fff !important; line-height: 1.42; }
+    button.business-scenario-card.is-selected > h3 { color: #fff !important; }
+    button.business-scenario-card.is-selected > p { color: rgba(255, 255, 255, 0.9) !important; }
     .business-scenario-card__tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 12px; }
     .business-scenario-card__tags span { padding: 3px 6px; border-radius: 999px; background: var(--workspace-primary-soft); color: var(--workspace-primary-hover); font-size: 11px; font-weight: 800; }
     .setup-error-summary {
@@ -574,7 +576,7 @@
             <span class="business-scenario-card__check" aria-hidden="true">✓</span>
             <span class="business-scenario-card__icon" aria-hidden="true">{{ ['☁', '◆', '⌁', '↗'][loop.index0] }}</span>
             <h3>{{ scenario.name }}</h3>
-            <p>{{ scenario.description }}</p>
+            <p class="business-scenario-card__description">{{ scenario.description }}</p>
             {% if scenario.tags %}
               <span class="business-scenario-card__tags">
                 {% for tag in scenario.tags %}<span>{{ tag }}</span>{% endfor %}

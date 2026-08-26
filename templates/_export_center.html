@@ -61,14 +61,20 @@
     <form method="post" action="{{ url_for('step4') }}">
       <input type="hidden" name="action" value="generate_presentation" />
       <input type="hidden" name="active_scenario" value="price" />
-      <label class="results-export__presentation-select">
-        <span>Presentation scenario</span>
-        <select name="presentation_scenario" data-presentation-scenario>
-          <option value="native">OCI Compute Migration</option>
-          <option value="ocvs">Oracle Cloud VMware Solution</option>
-          <option value="hybrid">OCI Hybrid</option>
-        </select>
-      </label>
+      {% if scenario_ui.id == 'compute' %}
+        <label class="results-export__presentation-select">
+          <span>Presentation scenario</span>
+          <select name="presentation_scenario" data-presentation-scenario>
+            <option value="native">OCI Compute Migration</option>
+            <option value="ocvs">Oracle Cloud VMware Solution</option>
+            <option value="hybrid">OCI Hybrid</option>
+          </select>
+        </label>
+      {% else %}
+        <span class="results-export__presentation-select" aria-label="Presentation template selected automatically">
+          {% if scenario_ui.id == 'ocvs' %}Oracle Cloud VMware Solution{% elif scenario_ui.id == 'capacity' %}Capacity Expansion with OCVS{% else %}Disaster Recovery{% endif %}
+        </span>
+      {% endif %}
       <button type="submit" class="results-button">Generate Presentation</button>
     </form>
   </div>

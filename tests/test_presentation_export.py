@@ -81,9 +81,25 @@ class PresentationExportTests(unittest.TestCase):
             "Capacity Expansion with OCVS.pptx",
         )
         self.assertEqual(
+            resolve_presentation("hybrid", {"id": "ocvs", "name": "Move to OCVS"}),
+            "Oracle Cloud VMware Solution.pptx",
+        )
+        self.assertEqual(
             resolve_presentation("native", {"id": "dr", "name": "Disaster Recovery"}),
             "Disaster Recovery.pptx",
         )
+
+    def test_dedicated_scenarios_ignore_a_stale_workspace_selection(self):
+        for scenario_id, expected_template in {
+            "ocvs": "Oracle Cloud VMware Solution.pptx",
+            "capacity": "Capacity Expansion with OCVS.pptx",
+            "dr": "Disaster Recovery.pptx",
+        }.items():
+            with self.subTest(scenario_id=scenario_id):
+                self.assertEqual(
+                    resolve_presentation("hybrid", {"id": scenario_id, "name": "Stale selection test"}),
+                    expected_template,
+                )
 
     def test_storage_type_rules(self):
         self.assertEqual(app._presentation_storage_type("BM.Standard.E5.128"), "OCI Block Volume (Block Storage)")
