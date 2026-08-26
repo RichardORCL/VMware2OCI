@@ -15,17 +15,20 @@
         <span class="inventory-review__selection-status" data-selection-status role="status" aria-live="polite" aria-atomic="true">
           {{ selected_vm_count }} of {{ inventory_summary.vm_count }} included
         </span>
+        <button type="button" class="inventory-button inventory-button--secondary" data-refresh-selected-scope>
+          Refresh selected scope
+        </button>
       </div>
     </header>
 
-    <dl class="inventory-summary" aria-label="Inventory summary">
-      <div><dt>VMs</dt><dd>{{ "{:,}".format(inventory_summary.vm_count) }}</dd></div>
-      <div><dt>vCPU</dt><dd>{{ "{:,}".format(inventory_summary.total_vcpus) }}</dd></div>
-      <div><dt>RAM</dt><dd>{{ inventory_summary.total_memory }}</dd></div>
-      <div><dt>Storage</dt><dd>{{ "{:,}".format(inventory_summary.total_storage_gb) }} GB</dd></div>
-      <div><dt>Powered on</dt><dd>{{ "{:,}".format(inventory_summary.powered_on_count) }}</dd></div>
-      {% if not scenario_ui.ocvs_only %}<div><dt>Native-supported</dt><dd>{{ "{:,}".format(inventory_summary.native_supported_count) }}</dd></div>{% endif %}
-      <div><dt title="Unique VMs with one or more inventory notes">VMs to review</dt><dd>{{ "{:,}".format(inventory_summary.review_count) }}</dd></div>
+    <p class="inventory-summary__scope-label">Selected assessment scope</p>
+    <dl class="inventory-summary" aria-label="Selected assessment scope summary" data-selected-scope-summary>
+      <div><dt>VMs</dt><dd data-summary-vms>{{ "{:,}".format(selected_inventory_summary.vm_count) }}</dd></div>
+      <div><dt>vCPU</dt><dd data-summary-vcpus>{{ "{:,}".format(selected_inventory_summary.total_vcpus) }}</dd></div>
+      <div><dt>RAM</dt><dd data-summary-ram>{{ selected_inventory_summary.total_memory }}</dd></div>
+      <div><dt>Storage</dt><dd data-summary-storage>{{ selected_inventory_summary.total_storage }}</dd></div>
+      <div><dt>Powered on</dt><dd data-summary-powered-on>{{ "{:,}".format(selected_inventory_summary.powered_on_count) }}</dd></div>
+      <div><dt title="Selected VMs with one or more inventory notes">VMs to review</dt><dd data-summary-review>{{ "{:,}".format(selected_inventory_summary.review_count) }}</dd></div>
     </dl>
 
     <form method="post" id="continue_step4_form" class="inventory-review__form" novalidate>
@@ -80,6 +83,7 @@
         <div class="inventory-toolbar__commands">
           <div class="inventory-command-group" aria-label="Inclusion commands">
             <button type="button" class="inventory-button inventory-button--secondary" data-select-all>Select All</button>
+            <button type="button" class="inventory-button inventory-button--secondary" data-select-filtered-only>Select filtered only</button>
             <button type="button" class="inventory-button inventory-button--secondary" data-include-filtered>Include filtered</button>
             <button type="button" class="inventory-button inventory-button--secondary" data-exclude-filtered>Exclude filtered</button>
           </div>

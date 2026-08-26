@@ -9838,18 +9838,20 @@ def step3() -> str:
                 inventory_errors.append("The submitted inventory contains duplicate VM selections.")
             if not candidate_names:
                 inventory_errors.append("Include at least one VM before saving Inventory Review.")
-            candidate_placements, keyed_errors, placement_errors = parse_exact_placement_fields(
-                request.form,
-                "placement",
-                candidate_names,
-                list(vm_index),
-                {
-                    vm_name: default_inventory_placement(vm_index[vm_name], supported_signatures)
-                    for vm_name in candidate_names
-                },
-            )
             if ocvs_only:
                 candidate_placements = {vm_name: "ocvs" for vm_name in candidate_names}
+                keyed_errors = []
+            else:
+                candidate_placements, keyed_errors, placement_errors = parse_exact_placement_fields(
+                    request.form,
+                    "placement",
+                    candidate_names,
+                    list(vm_index),
+                    {
+                        vm_name: default_inventory_placement(vm_index[vm_name], supported_signatures)
+                        for vm_name in candidate_names
+                    },
+                )
             inventory_errors.extend(keyed_errors)
 
             submitted_acknowledgments = set(request.form.getlist("acknowledged_warning_ids"))
@@ -10081,6 +10083,23 @@ def step3() -> str:
         "native_supported_count": supported_count,
         "review_count": len(review_vm_names),
     }
+    selected_inventory_rows = [row for row in inventory_rows if row["included"]]
+    selected_memory_mb = sum(_to_number(row.get("memory_mb")) for row in selected_inventory_rows)
+    selected_storage_mib = sum(_to_number(row.get("provisioned_mib")) for row in selected_inventory_rows)
+    selected_storage_gb = int(math.ceil(selected_storage_mib / 1024.0)) if selected_storage_mib else 0
+    selected_storage_tb = selected_storage_gb / 1024.0
+    selected_inventory_summary = {
+        "vm_count": len(selected_inventory_rows),
+        "total_vcpus": int(sum(_to_number(row.get("cpus")) for row in selected_inventory_rows)),
+        "total_memory": f"{selected_memory_mb / 1024.0:,.1f} GB",
+        "total_storage": (
+            f"{selected_storage_gb:,} GB ({selected_storage_tb:.1f} TB)"
+            if not math.isclose(selected_storage_tb, round(selected_storage_tb))
+            else f"{selected_storage_gb:,} GB ({int(round(selected_storage_tb))} TB)"
+        ),
+        "powered_on_count": sum(1 for row in selected_inventory_rows if row["power_key"] == "on"),
+        "review_count": sum(1 for row in selected_inventory_rows if row["warning_titles"]),
+    }
     readiness = build_current_readiness_context(
         inventory_rows=all_vms,
         selected_vm_names=selected_vm_names,
@@ -10113,6 +10132,7 @@ def step3() -> str:
             source_vinfo_csv=source_vinfo_csv,
             inventory_rows=inventory_rows,
             inventory_summary=inventory_summary,
+            selected_inventory_summary=selected_inventory_summary,
             inventory_issues=inventory_issues,
             inventory_errors=inventory_errors,
             acknowledged_warning_ids=acknowledged_warning_ids,
