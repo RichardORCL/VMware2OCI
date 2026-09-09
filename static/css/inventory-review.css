@@ -89,6 +89,14 @@
   background: var(--workspace-surface);
 }
 
+.inventory-summary__scope-label {
+  margin: 0 0 6px;
+  color: var(--workspace-muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
 .inventory-summary > div {
   min-width: 0;
   padding: 12px 14px;

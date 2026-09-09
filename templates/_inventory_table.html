@@ -58,6 +58,11 @@
             data-sort-storage="{{ vm.provisioned_mib }}"
             data-sort-placement="{{ vm.placement_label }}"
             data-sort-warning="{{ vm.warning_titles|join(', ') }}"
+            data-summary-vcpus="{{ vm.cpus }}"
+            data-summary-memory-mb="{{ vm.memory_mb }}"
+            data-summary-storage-mib="{{ vm.provisioned_mib }}"
+            data-summary-powered-on="{{ 'true' if vm.power_key == 'on' else 'false' }}"
+            data-summary-review="{{ 'true' if vm.warning_titles else 'false' }}"
           >
             <td class="inventory-col-include">
               <input

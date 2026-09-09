@@ -505,9 +505,13 @@ def resolve_presentation_template(
     scenario_id = str(business_scenario.get("id") or "")
     recommendation = str(assessor_recommendation or "").strip().lower()
     selected_scenario = str(active_scenario or "").strip().lower()
-    if scenario_id in {"capacity", "dr"}:
+    if scenario_id in {"ocvs", "capacity", "dr"}:
         template_id = scenario_id
-        scenario_name = str(business_scenario.get("name") or "Assessment")
+        scenario_name = {
+            "ocvs": "Oracle Cloud VMware Solution",
+            "capacity": "Capacity Expansion with OCVS",
+            "dr": "Disaster Recovery",
+        }[scenario_id]
     elif selected_scenario in {"native", "ocvs", "hybrid"}:
         template_id = "compute" if selected_scenario == "native" else selected_scenario
         scenario_name = {
@@ -9838,18 +9842,20 @@ def step3() -> str:
                 inventory_errors.append("The submitted inventory contains duplicate VM selections.")
             if not candidate_names:
                 inventory_errors.append("Include at least one VM before saving Inventory Review.")
-            candidate_placements, keyed_errors, placement_errors = parse_exact_placement_fields(
-                request.form,
-                "placement",
-                candidate_names,
-                list(vm_index),
-                {
-                    vm_name: default_inventory_placement(vm_index[vm_name], supported_signatures)
-                    for vm_name in candidate_names
-                },
-            )
             if ocvs_only:
                 candidate_placements = {vm_name: "ocvs" for vm_name in candidate_names}
+                keyed_errors = []
+            else:
+                candidate_placements, keyed_errors, placement_errors = parse_exact_placement_fields(
+                    request.form,
+                    "placement",
+                    candidate_names,
+                    list(vm_index),
+                    {
+                        vm_name: default_inventory_placement(vm_index[vm_name], supported_signatures)
+                        for vm_name in candidate_names
+                    },
+                )
             inventory_errors.extend(keyed_errors)
 
             submitted_acknowledgments = set(request.form.getlist("acknowledged_warning_ids"))
@@ -10081,6 +10087,23 @@ def step3() -> str:
         "native_supported_count": supported_count,
         "review_count": len(review_vm_names),
     }
+    selected_inventory_rows = [row for row in inventory_rows if row["included"]]
+    selected_memory_mb = sum(_to_number(row.get("memory_mb")) for row in selected_inventory_rows)
+    selected_storage_mib = sum(_to_number(row.get("provisioned_mib")) for row in selected_inventory_rows)
+    selected_storage_gb = int(math.ceil(selected_storage_mib / 1024.0)) if selected_storage_mib else 0
+    selected_storage_tb = selected_storage_gb / 1024.0
+    selected_inventory_summary = {
+        "vm_count": len(selected_inventory_rows),
+        "total_vcpus": int(sum(_to_number(row.get("cpus")) for row in selected_inventory_rows)),
+        "total_memory": f"{selected_memory_mb / 1024.0:,.1f} GB",
+        "total_storage": (
+            f"{selected_storage_gb:,} GB ({selected_storage_tb:.1f} TB)"
+            if not math.isclose(selected_storage_tb, round(selected_storage_tb))
+            else f"{selected_storage_gb:,} GB ({int(round(selected_storage_tb))} TB)"
+        ),
+        "powered_on_count": sum(1 for row in selected_inventory_rows if row["power_key"] == "on"),
+        "review_count": sum(1 for row in selected_inventory_rows if row["warning_titles"]),
+    }
     readiness = build_current_readiness_context(
         inventory_rows=all_vms,
         selected_vm_names=selected_vm_names,
@@ -10113,6 +10136,7 @@ def step3() -> str:
             source_vinfo_csv=source_vinfo_csv,
             inventory_rows=inventory_rows,
             inventory_summary=inventory_summary,
+            selected_inventory_summary=selected_inventory_summary,
             inventory_issues=inventory_issues,
             inventory_errors=inventory_errors,
             acknowledged_warning_ids=acknowledged_warning_ids,
@@ -11114,7 +11138,7 @@ def step4() -> str:
         setup_scenario_id = str(business_scenario.get("id", "")).strip().lower()
         presentation_scenario_id = (
             setup_scenario_id
-            if setup_scenario_id in {"capacity", "dr"}
+            if setup_scenario_id in {"ocvs", "capacity", "dr"}
             else submitted_presentation_scenario or setup_scenario_id
         )
         build_customer_presentation_pptx(
@@ -11124,7 +11148,7 @@ def step4() -> str:
             business_scenario={
                 **business_scenario,
                 # The selected Step 3 workspace is the export source of truth.
-                # Dedicated Capacity/DR exports retain their Setup scenario IDs.
+                # Dedicated OCVS exports retain their Setup scenario IDs.
                 "id": presentation_scenario_id,
                 "name": presentation_scenario_name,
             },

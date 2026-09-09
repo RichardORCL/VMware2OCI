@@ -13,6 +13,15 @@
   const scopeOutput = document.getElementById("inventory-bulk-scope");
   const visibleCount = document.querySelector("[data-visible-count]");
   const selectionStatus = document.querySelector("[data-selection-status]");
+  const refreshSelectedScope = document.querySelector("[data-refresh-selected-scope]");
+  const summaryFields = {
+    vms: document.querySelector("[data-summary-vms]"),
+    vcpus: document.querySelector("[data-summary-vcpus]"),
+    ram: document.querySelector("[data-summary-ram]"),
+    storage: document.querySelector("[data-summary-storage]"),
+    poweredOn: document.querySelector("[data-summary-powered-on]"),
+    review: document.querySelector("[data-summary-review]"),
+  };
   const emptyFilter = document.querySelector("[data-empty-filter]");
   const warningButtons = Array.from(document.querySelectorAll(".warning-filter[data-warning-filter]"));
   const warningItems = Array.from(document.querySelectorAll("[data-warning-item]"));
@@ -105,6 +114,43 @@
     selectionStatus.textContent = `${selectedCount} of ${rowRecords.length} included`;
   }
 
+  function numberFromDataset(record, key) {
+    return Number.parseFloat(record.row.dataset[key] || "0") || 0;
+  }
+
+  function formatMemory(totalMb) {
+    const totalGb = totalMb / 1024;
+    return `${totalGb.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} GB`;
+  }
+
+  function formatStorage(totalMib) {
+    const totalGb = Math.ceil(totalMib / 1024);
+    const totalTb = totalGb / 1024;
+    const formattedTb = Number.isInteger(totalTb) ? totalTb.toFixed(0) : totalTb.toFixed(1);
+    return `${totalGb.toLocaleString()} GB (${formattedTb} TB)`;
+  }
+
+  function refreshSelectedScopeSummary() {
+    const selectedRecords = rowRecords.filter((record) => record.inclusion && record.inclusion.checked);
+    const totals = selectedRecords.reduce(
+      (summary, record) => ({
+        vcpus: summary.vcpus + numberFromDataset(record, "summaryVcpus"),
+        memoryMb: summary.memoryMb + numberFromDataset(record, "summaryMemoryMb"),
+        storageMib: summary.storageMib + numberFromDataset(record, "summaryStorageMib"),
+        poweredOn: summary.poweredOn + (record.row.dataset.summaryPoweredOn === "true" ? 1 : 0),
+        review: summary.review + (record.row.dataset.summaryReview === "true" ? 1 : 0),
+      }),
+      { vcpus: 0, memoryMb: 0, storageMib: 0, poweredOn: 0, review: 0 }
+    );
+
+    if (summaryFields.vms) summaryFields.vms.textContent = selectedRecords.length.toLocaleString();
+    if (summaryFields.vcpus) summaryFields.vcpus.textContent = Math.round(totals.vcpus).toLocaleString();
+    if (summaryFields.ram) summaryFields.ram.textContent = formatMemory(totals.memoryMb);
+    if (summaryFields.storage) summaryFields.storage.textContent = formatStorage(totals.storageMib);
+    if (summaryFields.poweredOn) summaryFields.poweredOn.textContent = totals.poweredOn.toLocaleString();
+    if (summaryFields.review) summaryFields.review.textContent = totals.review.toLocaleString();
+  }
+
   function updateFilters() {
     let count = 0;
     rowRecords.forEach((record) => {
@@ -118,7 +164,7 @@
     if (emptyFilter) emptyFilter.hidden = count !== 0;
     if (scopeOutput) {
       scopeOutput.textContent = isFilterActive()
-        ? `Bulk scope: ${count} filtered of ${rowRecords.length} loaded VMs.`
+        ? `Bulk scope: ${count} filtered of ${rowRecords.length} loaded VMs. Select filtered only replaces the assessment scope.`
         : `Bulk scope: all ${rowRecords.length} loaded VMs.`;
     }
   }
@@ -137,6 +183,10 @@
     rowScope.forEach(change);
     updateSelectionStatus();
     updateFilters();
+  }
+
+  if (refreshSelectedScope) {
+    refreshSelectedScope.addEventListener("click", refreshSelectedScopeSummary);
   }
 
   if (searchInput) {
@@ -201,6 +251,20 @@
           syncInclusion(record);
         }
       );
+    });
+  }
+
+  const selectFilteredOnly = document.querySelector("[data-select-filtered-only]");
+  if (selectFilteredOnly) {
+    selectFilteredOnly.addEventListener("click", () => {
+      const visibleIndexes = new Set(visibleRecords().map((record) => record.rowIndex));
+      runBulk(rowRecords, (record) => {
+        if (!record.inclusion) return;
+        const shouldBeIncluded = visibleIndexes.has(record.rowIndex);
+        if (record.inclusion.checked === shouldBeIncluded) return;
+        record.inclusion.checked = shouldBeIncluded;
+        syncInclusion(record);
+      });
     });
   }
 
