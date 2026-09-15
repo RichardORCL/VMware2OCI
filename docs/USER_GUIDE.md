@@ -158,13 +158,17 @@ Supported inventory formats:
 - `.xlsm`
 - `.csv`
 
-The tool is optimized for RVTools exports, especially `vInfo` and supporting RVTools detail sheets. It can also consume a simpler table when it has the required fields:
+The tool supports RVTools exports, especially `vInfo` and supporting RVTools detail sheets, and Matilda Cloud `Inventory Report.xlsx` workbooks. It can also consume a simpler table when it has the required fields:
 
 - VM name
 - vCPU
 - RAM
 - Storage
 - Operating system
+
+For Matilda Cloud, choose **Upload Inventory File** and select `Inventory Report.xlsx`. The main `Vm` sheet supplies the VM name, allocated logical processors, memory, total storage, OS/version, and power state. Both powered-on and powered-off VMs remain available for selection in Inventory Review. The same sizing, cost comparison, assessment save/load, and export controls apply as for RVTools.
+
+The importer uses total storage rather than used storage, and does not apply utilization reductions. Its scope excludes other sheets, including `Vm Ipv6`, host totals, and template records omitted by Matilda. Check those exclusions before confirming the customer scope. Missing sizing columns produce an import error; per-VM missing values and duplicate names use the existing inventory warnings. Unknown OS details remain subject to review.
 
 If the detailed VM inventory is not available, use the manual workload summary. Manual mode creates a synthetic sizing inventory from total VM count, total vCPU, RAM, storage, and supported versus unsupported or legacy VM counts.
 

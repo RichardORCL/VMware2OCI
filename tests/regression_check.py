@@ -2919,19 +2919,19 @@ def validate_stage1_setup_redesign() -> None:
 
         inventory_html = inventory_section.group(0) if inventory_section else ""
         check(
-            "Stage 1 inventory source prioritizes RVTools upload and keeps manual entry as a fallback",
+            "Stage 1 inventory source supports RVTools and Matilda upload with manual fallback",
             "Inventory Source" in inventory_html
-            and "Upload an RVTools export or reuse a previously uploaded file." in inventory_html
-            and "Upload RVTools file" in inventory_html
+            and "RVTools or Matilda Cloud inventory" in inventory_html
+            and "Upload inventory file" in inventory_html
             and "Use saved inventory" in inventory_html
-            and "No RVTools file? Create manual summary" in inventory_html
+            and "No inventory file? Create manual summary" in inventory_html
             and "Manual Workload Summary" in inventory_html
             and "Upload or catalog" not in inventory_html
             and "Inventory mode" not in inventory_html
             and len(re.findall(r'name="inventory_mode"', inventory_html)) == 2
             and 'value="upload"' in inventory_html
             and 'value="manual"' in inventory_html
-            and inventory_html.index("Upload RVTools file") < inventory_html.index("Use saved inventory")
+            and inventory_html.index("Upload inventory file") < inventory_html.index("Use saved inventory")
             and re.search(r'<details[^>]+class="manual-inventory-fallback"[^>]*>', inventory_html)
             and not re.search(r'<details[^>]+class="manual-inventory-fallback"[^>]*\sopen(?:\s|=|>)', inventory_html),
             inventory_html,
@@ -3333,7 +3333,7 @@ def validate_stage1_identity_save_and_loaded_manual_mode() -> None:
             and re.search(r"\shidden(?:\s|>)", manual_panel_tag) is None
             and 'aria-hidden="false"' in upload_panel_tag
             and re.search(r"\shidden(?:\s|>)", upload_panel_tag) is None
-            and "Upload RVTools File" in loaded_html
+            and "Upload Inventory File" in loaded_html
             and "Use Saved Inventory" in loaded_html,
             f"loaded={loaded_manual_path}, manual_panel={manual_panel_tag}, upload_panel={upload_panel_tag}",
         )

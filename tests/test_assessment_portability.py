@@ -1026,7 +1026,8 @@ class PortableAssessmentRouteTests(unittest.TestCase):
                     "assessment_name": "Alpha migration",
                     "assessment_notes": "Notes",
                     "excel_export_label": "Export Draft",
-                }
+                },
+                scenario_ui=app_module.business_scenario_ui(),
             )
         self.assertIn('action="/assessment/import"', export_center)
 
@@ -2399,7 +2400,8 @@ class PortableAssessmentRouteTests(unittest.TestCase):
                     "assessment_name": "Alpha migration",
                     "assessment_notes": "Notes",
                     "excel_export_label": "Export Draft",
-                }
+                },
+                scenario_ui=app_module.business_scenario_ui(),
             )
         self.assertIn('value="export_assessment"', html)
         self.assertIn('name="assessment_file"', html)

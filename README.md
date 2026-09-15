@@ -12,7 +12,7 @@ This tool is for migration-path assessment and price comparison. It is not a fin
 
 ## Main Capabilities
 
-- Import VM inventory from RVTools exports.
+- Import VM inventory from RVTools exports or Matilda Cloud Inventory Report workbooks.
 - Select the VMs included in the assessment.
 - Check OCI Native OS support.
 - Estimate OCI Native compute, storage, VPU, and Windows license-included costs.
@@ -234,6 +234,16 @@ A sample file is included:
 ```text
 rvtools/example_RVTools_tabvInfo.csv
 ```
+
+### Matilda Cloud inventory
+
+Upload Matilda Cloud **Inventory Report.xlsx** through the same inventory upload control as RVTools, or place it under `rvtools/` and select it from saved inventory. The importer reads the main `Vm` sheet, using `Hostname`, `Logical Processors`, `Memory(GB)`, and `Total Storage(GB)` for sizing. It combines `Operating System` and `OS Version` and reads `Power Status` for inventory review.
+
+Matilda inventories use the existing VM selection, OCI Native / OCVS / Hybrid sizing, local save/load, portable assessment JSON, and export workflows. The reported GB values follow the same 1,024 MiB conversion as other GB-based inventory inputs.
+
+The import scope is the main `Vm` sheet. Summary, cluster, ESX, network, and `Vm Ipv6` sheets do not add workloads or capacity to that scope. Templates and IPv6-only VMs excluded from Matilda's main sheet are therefore not included. Review the source report's exclusions when agreeing the assessment scope.
+
+Sizing uses reported total storage. Used storage and Matilda right-sizing/TCO recommendations are not imported. Retain allocated capacity as the starting point and validate storage definitions, OS details, and any sizing adjustments with the customer.
 
 ## Output Files
 

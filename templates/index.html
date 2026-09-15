@@ -534,7 +534,7 @@
     "currency_code": "Currency",
     "price_list_file": "Existing price list",
     "rvtools_file": "Saved inventory",
-    "rvtools_upload": "RVTools file",
+    "rvtools_upload": "Inventory file",
     "manual_vm_count": "VM count",
     "manual_total_vcpus": "Total vCPU",
     "manual_total_memory_gb": "Total RAM GB",
@@ -749,7 +749,7 @@
     <section id="inventory-source" class="setup-section" aria-labelledby="inventory-source-title">
       <div class="setup-section__header">
         <h2 id="inventory-source-title">Inventory Source</h2>
-        <p>Upload an RVTools export or reuse a previously uploaded file.</p>
+        <p>Upload an RVTools or Matilda Cloud inventory, or reuse a previously uploaded file.</p>
       </div>
 
       <form method="post" enctype="multipart/form-data" class="setup-form" id="inventory-source-form">
@@ -761,7 +761,7 @@
             name="inventory_mode"
             type="radio"
             value="upload"
-            aria-label="Use RVTools upload or saved inventory"
+            aria-label="Upload inventory or use saved inventory"
             {% if inventory_mode == "upload" %}checked{% endif %}
           />
         </fieldset>
@@ -778,7 +778,7 @@
           {% endif %}
           <div class="inventory-upload-grid">
             <div class="setup-field inventory-upload-card inventory-upload-primary">
-              <label for="rvtools_upload">Upload RVTools file</label>
+              <label for="rvtools_upload">Upload inventory file</label>
               <input
                 id="rvtools_upload"
                 name="rvtools_upload"
@@ -788,13 +788,13 @@
                 {% if field_errors.get('rvtools_upload') %}aria-invalid="true"{% endif %}
               />
               <div class="inventory-upload-help">
-                <p class="setup-field__hint" id="rvtools_upload-hint">Use an RVTools .xlsx, .xlsm, or .csv export.</p>
+                <p class="setup-field__hint" id="rvtools_upload-hint">Use an RVTools .xlsx, .xlsm, or .csv export, or a Matilda Cloud Inventory Report workbook (.xlsx or .xlsm). Matilda imports the main Vm sheet only, excluding Vm Ipv6 and templates omitted from that sheet. Sizing uses total storage.</p>
                 {% if field_errors.get("rvtools_upload") %}
                   <p class="setup-field__error" id="rvtools_upload-error">{{ field_errors.rvtools_upload }}</p>
                 {% endif %}
               </div>
               <div class="setup-actions">
-                <button type="submit" name="action" value="upload_rvtools_file" class="setup-button">Upload RVTools File</button>
+                <button type="submit" name="action" value="upload_rvtools_file" class="setup-button">Upload Inventory File</button>
               </div>
             </div>
 
@@ -812,7 +812,7 @@
                 {% endfor %}
               </select>
               <div class="inventory-upload-help">
-                <p class="setup-field__hint" id="rvtools_file-hint">Reuse a previously uploaded RVTools export.</p>
+                <p class="setup-field__hint" id="rvtools_file-hint">Reuse a previously uploaded inventory.</p>
                 {% if field_errors.get("rvtools_file") %}
                   <p class="setup-field__error" id="rvtools_file-error">{{ field_errors.rvtools_file }}</p>
                 {% endif %}
@@ -829,9 +829,9 @@
           data-manual-inventory-fallback
           {% if inventory_mode == "manual" %}open{% endif %}
         >
-          <summary>No RVTools file? Create manual summary</summary>
+          <summary>No inventory file? Create manual summary</summary>
           <div class="manual-inventory-fallback__body">
-            <p>Use this fallback only when the customer cannot share an RVTools export.</p>
+            <p>Use this fallback when the customer cannot share a VM inventory file.</p>
             <input
               class="inventory-mode__input"
               id="inventory-mode-manual"

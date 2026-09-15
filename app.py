@@ -2826,8 +2826,81 @@ def _find_aggregate_capacity_diagnostic(sheet_rows_by_name: dict[str, list[dict[
     return ""
 
 
+def _matilda_os_name(record: dict[str, str]) -> str:
+    """Join Matilda's family/release fields into the OS names used by inventory review."""
+    family = _record_first_value(record, "Operating System")
+    version = _record_first_value(record, "OS Version")
+    unknown_values = {"", "unknown", "n/a", "na", "none", "nan"}
+    if family.lower() in unknown_values:
+        family = ""
+    if version.lower() in unknown_values:
+        version = ""
+    if not family or not version:
+        return family or version
+
+    aliases = {
+        "rhel": "Red Hat Enterprise Linux",
+        "debian": "Debian GNU/Linux",
+        "suse linux enterprise server": "SUSE Linux Enterprise",
+        "ubuntu": "Ubuntu Linux",
+    }
+    canonical_family = aliases.get(family.lower(), family)
+    # Some exports put the complete VMware guest description in OS Version.
+    # Prefer it to repeating the family, retaining architecture and other evidence.
+    if family.lower() in version.lower() or canonical_family.lower() in version.lower():
+        for alias, canonical in aliases.items():
+            for prefix in sorted((alias, canonical), key=len, reverse=True):
+                if version.lower().startswith(prefix.lower() + " "):
+                    return canonical + version[len(prefix):]
+        return version
+    if family.lower() == "windows" and re.match(r"^20\d{2}\b", version):
+        canonical_family = "Windows Server"
+    return f"{canonical_family} {version}"
+
+
+def _find_matilda_inventory_records(
+    sheet_rows_by_name: dict[str, list[dict[int, str]]],
+) -> tuple[list[dict[str, str]], str] | None:
+    """Adapt only Matilda's main Vm table to the shared RVTools record contract."""
+    required = ("Hostname", "Logical Processors", "Memory(GB)", "Total Storage(GB)")
+    for sheet_name, sheet_rows in sheet_rows_by_name.items():
+        if sheet_name.lower() != "vm":
+            continue
+        for header_index, header_row in enumerate(sheet_rows[:30]):
+            # Preserve workbooks already understood by the generic importer,
+            # even if they also contain one of Matilda's column names.
+            if _looks_like_generic_vm_header(header_row):
+                break
+            headers = {_normalize_header_name(value) for value in header_row.values()}
+            is_matilda = ("logical processors" in headers and len({
+                "hostname", "memory gb", "total storage gb"
+            } & headers) >= 2) or {
+                "esx host name", "power status", "os version"
+            }.issubset(headers)
+            if not is_matilda:
+                continue
+            missing = [name for name in required if _normalize_header_name(name) not in headers]
+            if missing:
+                raise ValueError(
+                    f"Matilda Cloud Vm inventory is missing required sizing columns: {', '.join(missing)}. "
+                    "Upload the complete Inventory Report workbook with its main Vm sheet."
+                )
+            records = []
+            for record in _records_from_sheet_rows(sheet_rows, header_index):
+                records.append({
+                    "VM": _record_first_value(record, "Hostname"),
+                    "CPUs": _record_first_value(record, "Logical Processors"),
+                    "Memory GB": _record_first_value(record, "Memory(GB)"),
+                    "Storage GB": _record_first_value(record, "Total Storage(GB)"),
+                    "OS according to the configuration file": _matilda_os_name(record),
+                    "Powerstate": _record_first_value(record, "Power Status"),
+                })
+            return records, f"Matilda Cloud - {sheet_name} (main inventory only)"
+    return None
+
+
 def parse_vinfo_from_xlsx(xlsx_path: Path) -> tuple[list[dict[str, str]], str]:
-    """Parse VM inventory records from RVTools, VMwareInventory, or generic VM inventory sheets."""
+    """Parse VM records from RVTools, Matilda Cloud, VMwareInventory, or generic sheets."""
     sheet_rows_by_name = _read_xlsx_sheets(xlsx_path)
     if not sheet_rows_by_name:
         raise ValueError("The selected workbook does not contain readable worksheets.")
@@ -2839,6 +2912,10 @@ def parse_vinfo_from_xlsx(xlsx_path: Path) -> tuple[list[dict[str, str]], str]:
         records = _records_from_sheet_rows(sheet_rows_by_name[source_sheet], 0)
         records = _enrich_with_rvtools_detail_sheets(records, sheet_rows_by_name)
         return records, f"{source_sheet} + RVTools detail tabs"
+
+    matilda_match = _find_matilda_inventory_records(sheet_rows_by_name)
+    if matilda_match:
+        return matilda_match
 
     for candidate in ("vms", "virtual machines"):
         if candidate in lower_to_name:
@@ -2917,7 +2994,7 @@ def _load_imported_normalized_inventory(
 
 
 def load_vms_from_vinfo(selected_path: str) -> tuple[list[dict[str, Any]], str]:
-    """Load VM rows from a supported RVTools or VMwareInventory export."""
+    """Load a supported inventory export into the common normalized VM model."""
     selected = Path(selected_path)
     mapping_config = load_os_mapping_config()
 
