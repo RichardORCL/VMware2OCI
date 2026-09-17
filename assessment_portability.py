@@ -6,6 +6,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from services.ocvs_sdd_adapter import normalize_sdd_configuration
+
 
 PACKAGE_TYPE = "vmware_to_oci_assessment"
 SCHEMA_VERSION = 1
@@ -44,6 +46,7 @@ _OCVS_POLICY_RULES = {
 
 _APP_STATE_TEXT_LIST_FIELDS = {
     "selected_vm_names",
+    "selected_source_clusters",
     "acknowledged_warning_ids",
 }
 _OCVS_POLICY_FIELDS = {
@@ -106,6 +109,44 @@ def _clean_required_text(value: Any, field: str) -> str:
     if not clean:
         raise PortableAssessmentError(f"{field} is required.")
     return clean
+
+
+def _clean_bounded_json(value: Any, field: str, *, depth: int = 0) -> Any:
+    """Preserve a small persisted feature configuration without accepting unsafe JSON."""
+    if depth > 10:
+        raise PortableAssessmentError(f"{field} exceeds the maximum nesting depth.")
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        if len(value) > 8000:
+            raise PortableAssessmentError(f"{field} exceeds the maximum length of 8000 characters.")
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = float(value)
+        if not math.isfinite(number) or abs(number) > _MAX_NUMBER:
+            raise PortableAssessmentError(f"{field} contains an invalid number.")
+        return value
+    if isinstance(value, list):
+        if len(value) > MAX_VM_ROWS:
+            raise PortableAssessmentError(f"{field} contains too many items.")
+        return [
+            _clean_bounded_json(item, f"{field}[{index}]", depth=depth + 1)
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, Mapping):
+        if len(value) > 10000:
+            raise PortableAssessmentError(f"{field} contains too many fields.")
+        cleaned: dict[str, Any] = {}
+        for raw_key, item in value.items():
+            if not isinstance(raw_key, str) or not raw_key or len(raw_key) > 200:
+                raise PortableAssessmentError(f"{field} contains an invalid field name.")
+            cleaned[raw_key] = _clean_bounded_json(
+                item,
+                f"{field}.{raw_key}",
+                depth=depth + 1,
+            )
+        return cleaned
+    raise PortableAssessmentError(f"{field} contains an unsupported value.")
 
 
 def _clean_display_filename(value: Any, field: str) -> str:
@@ -258,9 +299,67 @@ def _clean_ocvs_policy(value: Any, field: str) -> dict[str, int | float]:
     return cleaned
 
 
+def _clean_target_clusters(value: Any, field: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) > 6:
+        raise PortableAssessmentError(f"{field} must contain at most six clusters.")
+    cleaned: list[dict[str, Any]] = []
+    for index, raw in enumerate(value):
+        item = _require_mapping(raw, f"{field}[{index}]")
+        cleaned.append(
+            {
+                "name": _clean_text(item.get("name", ""), f"{field}[{index}].name").strip(),
+                "source_clusters": _clean_text_list(item.get("source_clusters", []), f"{field}[{index}].source_clusters"),
+                "profile": _clean_enum(item.get("profile", "best_fit"), f"{field}[{index}].profile", _OCVS_PROFILE_VALUES),
+                "is_management": index == 0,
+            }
+        )
+    return cleaned
+
+
 def _clean_app_state(value: Any) -> dict[str, Any]:
     state = _require_mapping(value, "assessment.app_state")
     cleaned: dict[str, Any] = {}
+    if "sdd_configuration" in state:
+        sdd_configuration = normalize_sdd_configuration(
+            _clean_bounded_json(
+                _require_mapping(state["sdd_configuration"], "assessment.app_state.sdd_configuration"),
+                "assessment.app_state.sdd_configuration",
+            )
+        )
+        # Assessment IDs are installation-local and are rebound after import.
+        sdd_configuration["source_assessment_id"] = ""
+        cleaned["sdd_configuration"] = sdd_configuration
+    if "sdd_source_snapshot" in state:
+        sdd_source_snapshot = _clean_bounded_json(
+            _require_mapping(state["sdd_source_snapshot"], "assessment.app_state.sdd_source_snapshot"),
+            "assessment.app_state.sdd_source_snapshot",
+        )
+        if isinstance(sdd_source_snapshot, dict):
+            sdd_source_snapshot["assessment_id"] = ""
+            document = sdd_source_snapshot.get("document")
+            if isinstance(document, dict) and document.get("rvtools_file_name"):
+                document["rvtools_file_name"] = re.split(r"[/\\\\]", str(document["rvtools_file_name"]))[-1]
+        cleaned["sdd_source_snapshot"] = sdd_source_snapshot
+    if "migration_plan_records" in state:
+        if not isinstance(state["migration_plan_records"], list):
+            raise PortableAssessmentError("assessment.app_state.migration_plan_records must be a list.")
+        cleaned["migration_plan_records"] = [
+            {
+                _clean_text(key, "migration plan field"): _clean_text(item, "migration plan value")
+                for key, item in _require_mapping(record, "assessment.app_state.migration_plan_records item").items()
+            }
+            for record in state["migration_plan_records"]
+        ]
+    if "sizing_scope_mode" in state:
+        cleaned["sizing_scope_mode"] = _clean_enum(
+            state["sizing_scope_mode"], "assessment.app_state.sizing_scope_mode", {"consolidated", "source_cluster"}
+        )
+    for key in {"step4_ocvs_topology", "step4_hybrid_ocvs_topology"}:
+        if key in state:
+            cleaned[key] = _clean_enum(state[key], f"assessment.app_state.{key}", {"single", "multi"})
+    for key in {"step4_ocvs_target_clusters", "step4_hybrid_ocvs_target_clusters"}:
+        if key in state:
+            cleaned[key] = _clean_target_clusters(state[key], f"assessment.app_state.{key}")
     for key in _APP_STATE_TEXT_LIST_FIELDS:
         if key in state:
             cleaned[key] = _clean_text_list(
@@ -479,6 +578,8 @@ def _clean_step4_snapshot(value: Any) -> dict[str, Any]:
         "ocvs_commitment_term": _COMMITMENT_VALUES,
         "hybrid_ocvs_profile": _OCVS_PROFILE_VALUES,
         "hybrid_ocvs_commitment_term": _COMMITMENT_VALUES,
+        "ocvs_topology": {"single", "multi"},
+        "hybrid_ocvs_topology": {"single", "multi"},
     }
     for key, allowed in snapshot_enums.items():
         if key in snapshot:
@@ -487,6 +588,9 @@ def _clean_step4_snapshot(value: Any) -> dict[str, Any]:
                 f"assessment.step4_snapshot.{key}",
                 allowed,
             )
+    for key in {"ocvs_target_clusters", "hybrid_ocvs_target_clusters"}:
+        if key in snapshot:
+            cleaned[key] = _clean_target_clusters(snapshot[key], f"assessment.step4_snapshot.{key}")
     if "ocvs_dr_nodes" in snapshot:
         cleaned["ocvs_dr_nodes"] = _clean_state_number(
             snapshot["ocvs_dr_nodes"],
@@ -723,6 +827,10 @@ def _clean_inventory_row(value: Any, index: int) -> dict[str, Any]:
             row.get("provisioned_mib", 0),
             f"inventory.rows[{index}].provisioned_mib",
         ),
+        "source_cluster": _clean_text(row.get("source_cluster", "Unassigned source cluster"), f"inventory.rows[{index}].source_cluster").strip() or "Unassigned source cluster",
+        "resource_pool": _clean_text(row.get("resource_pool", ""), f"inventory.rows[{index}].resource_pool"),
+        "source_datacenter": _clean_text(row.get("source_datacenter", ""), f"inventory.rows[{index}].source_datacenter"),
+        "source_vcenter": _clean_text(row.get("source_vcenter", ""), f"inventory.rows[{index}].source_vcenter"),
     }
 
 

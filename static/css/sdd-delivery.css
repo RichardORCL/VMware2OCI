@@ -1,0 +1,16 @@
+.sdd-delivery { max-width: 1500px; }
+.sdd-version-table { overflow-x: auto; }
+.sdd-version-table table { width: 100%; border-collapse: collapse; min-width: 1050px; }
+.sdd-version-table th, .sdd-version-table td { padding: .8rem; border-bottom: 1px solid #d7ddd8; text-align: left; vertical-align: top; }
+.sdd-version-table th { color: #174f3e; font-size: .82rem; text-transform: uppercase; }
+.sdd-version-table small { display: block; margin-top: .3rem; color: #5b625e; }
+.sdd-file-actions { display: flex; flex-wrap: wrap; gap: .55rem; }
+.sdd-file-actions a { color: #006b58; font-weight: 700; }
+.sdd-status { display: inline-flex; padding: .28rem .55rem; border-radius: 999px; background: #eef4f1; font-weight: 700; }
+.sdd-status--delivered { background: #dff4e8; color: #17633f; }
+.sdd-status--superseded { background: #ececec; color: #555; }
+.sdd-delivery-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+.sdd-delivery-form label { display: grid; gap: .35rem; font-weight: 700; }
+.sdd-delivery-form input, .sdd-delivery-form textarea { width: 100%; box-sizing: border-box; padding: .65rem; border: 1px solid #aeb8b2; border-radius: 4px; }
+.sdd-delivery-form .sdd-field--wide { grid-column: 1 / -1; }
+@media (max-width: 850px) { .sdd-delivery-form { grid-template-columns: 1fr; } .sdd-delivery-form .sdd-field--wide { grid-column: auto; } .sdd-delivery .sdd-wizard__header { flex-wrap: wrap; } }

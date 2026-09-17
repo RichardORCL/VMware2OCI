@@ -34,6 +34,45 @@
     <form method="post" id="continue_step4_form" class="inventory-review__form" novalidate>
       <input type="hidden" name="action" value="save_inventory_review" />
 
+      <section class="inventory-scope-mode" aria-labelledby="inventory-scope-mode-title">
+        <div class="inventory-scope-mode__heading">
+          <div>
+            <p class="inventory-review__eyebrow">Sizing scope</p>
+            <h2 id="inventory-scope-mode-title">Environment grouping</h2>
+          </div>
+          <p>Choose whether the selected VMs form one consolidated workload or retain their source-cluster grouping.</p>
+        </div>
+        <div class="inventory-scope-mode__choices">
+          <label>
+            <input type="radio" name="sizing_scope_mode" value="consolidated" {% if sizing_scope_mode != 'source_cluster' %}checked{% endif %} data-sizing-scope-mode />
+            <span><strong>Consolidated environment</strong><small>Size the selected VMs as one workload.</small></span>
+          </label>
+          <label>
+            <input type="radio" name="sizing_scope_mode" value="source_cluster" {% if sizing_scope_mode == 'source_cluster' %}checked{% endif %} data-sizing-scope-mode />
+            <span><strong>Size by source cluster</strong><small>Preserve selected VMware cluster groups for planning and sizing.</small></span>
+          </label>
+        </div>
+        <div class="source-cluster-grid" data-source-cluster-picker {% if sizing_scope_mode != 'source_cluster' %}hidden{% endif %}>
+          {% for cluster in source_cluster_summaries %}
+            <label class="source-cluster-card">
+              <input
+                type="checkbox"
+                name="selected_source_clusters"
+                value="{{ cluster.name }}"
+                data-source-cluster-select="{{ cluster.name }}"
+                {% if cluster.name in selected_source_clusters or (not selected_source_clusters and cluster.selected_vm_count > 0) %}checked{% endif %}
+              />
+              <span class="source-cluster-card__name">{{ cluster.name }}</span>
+              <span>{{ cluster.vm_count }} VM(s)</span>
+              <span>{{ "{:,}".format(cluster.vcpus) }} vCPU</span>
+              <span>{{ "{:,}".format(cluster.memory_gb) }} GB RAM</span>
+              <span>{{ cluster.storage_tb }} TB storage</span>
+              <small>{{ cluster.selected_vm_count }} currently included</small>
+            </label>
+          {% endfor %}
+        </div>
+      </section>
+
       {% if inventory_errors %}
         <div class="inventory-error-summary" id="inventory-errors" role="alert" tabindex="-1">
           <h2>Review the highlighted inventory items</h2>

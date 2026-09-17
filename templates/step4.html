@@ -792,6 +792,18 @@
       .scenario-panel-head { display: grid; }
       .scenario-panel-actions { justify-content: flex-start; }
     }
+    .ocvs-topology { margin: .75rem 0; padding: .75rem; border: 1px solid var(--scenario-line); border-radius: var(--radius); background: #fff; }
+    .topology-mode-options { display:flex; gap:.75rem; flex-wrap:wrap; margin:.55rem 0; }
+    .topology-mode-options label { display:flex; align-items:center; gap:.35rem; padding:.45rem .6rem; border:1px solid var(--line); border-radius:var(--radius-sm); font-weight:700; }
+    .target-cluster-editor { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:.55rem; }
+    .target-cluster-editor[hidden] { display:none !important; }
+    .target-cluster-card { min-width:0; display:grid; gap:.45rem; border:1px solid var(--line); border-radius:var(--radius-sm); padding:.55rem; }
+    .target-cluster-card legend { color:var(--scenario-strong); font-weight:800; }
+    .target-cluster-card select[multiple] { min-height:6rem; }
+    .multi-cluster-results { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:.45rem; margin-top:.65rem; }
+    .multi-cluster-results article { display:grid; gap:.18rem; padding:.55rem; border:1px solid var(--scenario-line); border-radius:var(--radius-sm); background:var(--scenario-soft); }
+    .multi-cluster-results article span { color:var(--muted); font-size:var(--font-sm); }
+    .multi-cluster-results__total { border-width:2px !important; }
   </style>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/scenarios.css') }}" />
   {% if active_scenario == 'price' %}
@@ -1430,6 +1442,16 @@
       const pageHeading = document.getElementById('scenario-page-heading');
       const activeScenarioInput = document.getElementById('active_scenario');
       const step4Form = document.getElementById('step4-form');
+      document.querySelectorAll('[data-ocvs-topology-editor]').forEach((editor) => {
+        const radios = Array.from(editor.querySelectorAll('input[type="radio"][name$="_topology"]'));
+        const fields = editor.querySelector('[data-topology-fields]');
+        const sync = () => {
+          const active = radios.find((radio) => radio.checked);
+          if (fields) fields.hidden = !active || active.value !== 'multi';
+        };
+        radios.forEach((radio) => radio.addEventListener('change', sync));
+        sync();
+      });
       document.querySelectorAll('[data-autohide-flash="true"]').forEach((flash, index) => {
         window.setTimeout(() => {
           flash.classList.add('is-hiding');

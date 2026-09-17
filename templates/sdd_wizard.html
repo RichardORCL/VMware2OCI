@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block title %}Draft SDD Configuration - {{ active_section_label }}{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='css/sdd-wizard.css') }}" />{% endblock %}
+{% block stage_content %}
+<section class="sdd-wizard" aria-labelledby="sdd-wizard-title">
+  <header class="sdd-wizard__header">
+    <div>
+      <p class="sdd-wizard__eyebrow">Draft Solution Definition Document</p>
+      <h1 id="sdd-wizard-title">SDD Configuration</h1>
+      <p>Complete the customer-specific design information. Saved OCVS sizing values are included automatically.</p>
+    </div>
+    <div class="sdd-wizard__completion" aria-label="Configuration completion">
+      <strong>{{ sdd_readiness.completion_percentage }}%</strong><span>complete</span>
+    </div>
+  </header>
+
+  <nav class="sdd-wizard__steps" aria-label="SDD configuration steps">
+    {% for item in wizard_sections %}
+      <a href="{{ url_for('step4_sdd_configure_section', section=item) }}" class="sdd-wizard__step {{ 'is-current' if item == active_section else '' }} {{ 'is-complete' if sdd_readiness.step_completion.get(item) else '' }}" {% if item == active_section %}aria-current="step"{% endif %}>
+        <span>{{ loop.index }}</span><strong>{{ wizard_labels[item] }}</strong>
+      </a>
+    {% endfor %}
+  </nav>
+
+  {% set active_errors = sdd_readiness.blocking_errors_by_step.get(active_section, []) %}
+  {% if active_errors %}
+    <div class="sdd-wizard__message sdd-wizard__message--error" role="alert">
+      <strong>Please review this section</strong>
+      <ul>{% for item in active_errors %}<li>{{ item }}</li>{% endfor %}</ul>
+    </div>
+  {% endif %}
+  {% if sdd_readiness.configuration_is_stale %}
+    <div class="sdd-wizard__message sdd-wizard__message--warning" role="alert">
+      <strong>The saved sizing has changed.</strong> Review the configuration and save a section again before generating the Draft SDD.
+    </div>
+  {% endif %}
+
+  {% macro field(name, label, value='', required=false, help='', type='text') -%}
+    <label class="sdd-field">
+      <span>{{ label }} <small>{{ 'Required' if required else 'Optional' }}</small></span>
+      <input type="{{ type }}" name="{{ name }}" value="{{ value }}" {% if required %}required{% endif %} />
+      {% if help %}<em>{{ help }}</em>{% endif %}
+    </label>
+  {%- endmacro %}
+  {% macro area(name, label, value='', required=false, help='') -%}
+    <label class="sdd-field sdd-field--wide">
+      <span>{{ label }} <small>{{ 'Required' if required else 'Optional' }}</small></span>
+      <textarea name="{{ name }}" rows="4" {% if required %}required{% endif %}>{{ value }}</textarea>
+      {% if help %}<em>{{ help }}</em>{% endif %}
+    </label>
+  {%- endmacro %}
+  {% macro people_table(prefix, title, rows) -%}
+    <section class="sdd-repeat" data-repeat-group="{{ prefix }}">
+      <header><h3>{{ title }}</h3><button type="button" class="sdd-button sdd-button--small" data-add-row>Add person</button></header>
+      <div data-repeat-rows>
+        {% for row in rows or [{}] %}
+          <div class="sdd-repeat__row" data-repeat-row>
+            <input name="{{ prefix }}_name[]" aria-label="Name" placeholder="Name" value="{{ row.name or '' }}" />
+            <input name="{{ prefix }}_email[]" aria-label="Email" placeholder="Email" type="email" value="{{ row.email or '' }}" />
+            <input name="{{ prefix }}_role[]" aria-label="Role" placeholder="Role" value="{{ row.role or '' }}" />
+            <input name="{{ prefix }}_company[]" aria-label="Company" placeholder="Company" value="{{ row.company or '' }}" />
+            <button type="button" class="sdd-repeat__remove" data-remove-row aria-label="Remove row">Remove</button>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  {%- endmacro %}
+
+  {% if active_section != 'review-generate' %}
+  <form method="post" class="sdd-wizard__form">
+    <header class="sdd-wizard__section-head"><p>Step {{ wizard_sections.index(active_section) + 1 }} of 7</p><h2>{{ active_section_label }}</h2></header>
+    {% if active_section == 'customer-project' %}
+      <div class="sdd-grid">
+        {{ field('customer_legal_name', 'Legal customer name', config.customer_document.customer_legal_name, true) }}
+        {{ field('project_name', 'Project name', config.customer_document.project_name, true) }}
+        {{ field('assessment_name', 'Assessment name', config.customer_document.assessment_name) }}
+        {{ field('document_author', 'Document author', config.customer_document.document_author, true) }}
+        {{ field('document_author_email', 'Document author email', config.customer_document.document_author_email, true, '', 'email') }}
+        {{ field('version', 'Document version', config.customer_document.version, true, 'Use a value such as 0.1 or 1.0.') }}
+        {{ field('version_comment', 'Version comment', config.customer_document.version_comment) }}
+        {{ field('confidentiality_classification', 'Confidentiality classification', config.customer_document.confidentiality_classification) }}
+      </div>
+      {{ people_table('reviewers', 'Reviewers', config.delivery.reviewers) }}
+      {{ people_table('approvers', 'Approvers', config.delivery.approvers) }}
+      {{ people_table('project_team', 'Project team', config.delivery.project_team) }}
+    {% elif active_section == 'business-requirements' %}
+      <div class="sdd-grid">
+      {% for key, label in [
+        ('customer_business_context','Customer business context'),('business_drivers','Business drivers'),
+        ('solution_scope_summary','Solution scope summary'),('business_requirements','Business requirements'),
+        ('technical_requirements','Technical requirements'),('compliance_requirements','Compliance requirements'),
+        ('success_criteria','Success criteria')
+      ] %}{{ area(key, label, config.business[key], true, 'Enter verified customer information, or explicitly use Not provided / Not applicable.') }}{% endfor %}
+      {{ area('assumptions','Assumptions',config.business.assumptions) }}
+      {{ area('known_risks','Known risks',config.business.known_risks) }}
+      {{ area('customer_obligations','Customer obligations',config.business.customer_obligations) }}
+      {{ area('out_of_scope','Out-of-scope items',config.business.out_of_scope) }}
+      </div>
+    {% elif active_section == 'network-design' %}
+      <div class="sdd-grid">
+        {{ field('oci_region','Target OCI region',config.network.oci_region) }}
+        {{ field('tenancy_name_or_ocid','Tenancy name or OCID',config.network.tenancy_name_or_ocid) }}
+        {{ field('compartment_name_or_ocid','Compartment name or OCID',config.network.compartment_name_or_ocid) }}
+        {{ field('vcn_name','VCN name',config.network.vcn_name) }}
+        {{ field('vcn_cidr','VCN CIDR',config.network.vcn_cidr, false, 'Example format: 10.0.0.0/16. No sample value is added automatically.') }}
+        {{ field('sddc_cidr','SDDC CIDR',config.network.sddc_cidr) }}
+        {% for key, label in [('workload_cidrs','Workload CIDRs'),('management_cidrs','Management CIDRs'),('vmotion_cidrs','vMotion CIDRs'),('replication_cidrs','Replication CIDRs'),('hcx_cidrs','HCX CIDRs'),('dns_servers','DNS servers'),('ntp_servers','NTP servers')] %}
+          {{ area(key,label,config.network[key]|join('\n'),false,'Enter one value per line.') }}
+        {% endfor %}
+        {{ area('drg_details','DRG details',config.network.drg_details) }}
+      </div>
+      <div class="sdd-options">
+        {% for key, label, detail in [('fastconnect','FastConnect','fastconnect_details'),('ipsec_vpn','IPSec VPN','ipsec_vpn_details'),('hcx','HCX','hcx_details')] %}
+          <label><input type="checkbox" name="{{ key }}_enabled" value="1" {% if config.network[key ~ '_enabled'] %}checked{% endif %} /> Use {{ label }}</label>
+          {{ area(detail,label ~ ' details',config.network[detail]) }}
+        {% endfor %}
+      </div>
+      <section class="sdd-repeat" data-repeat-group="segments">
+        <header><h3>Network segments</h3><button type="button" class="sdd-button sdd-button--small" data-add-row>Add segment</button></header>
+        <div data-repeat-rows>{% for row in config.network.segments or [{}] %}<div class="sdd-repeat__row sdd-repeat__row--segments" data-repeat-row>
+          {% for key,label in [('name','Segment name'),('purpose','Purpose'),('cidr','CIDR'),('vlan','VLAN'),('gateway','Gateway'),('routing_notes','Routing notes'),('security_notes','Security notes')] %}<input name="segments_{{ key }}[]" aria-label="{{ label }}" placeholder="{{ label }}" value="{{ row[key] or '' }}" />{% endfor %}
+          <button type="button" class="sdd-repeat__remove" data-remove-row>Remove</button>
+        </div>{% endfor %}</div>
+      </section>
+    {% elif active_section == 'security-compliance' %}
+      <label class="sdd-toggle"><input type="checkbox" name="include_security" value="1" {% if config.section_flags.include_security %}checked{% endif %} /> Include Security & Compliance in the Draft SDD</label>
+      <div class="sdd-grid">
+        {% for key,label in [('iam_model','IAM and access-control model'),('encryption_requirements','Encryption requirements'),('logging_requirements','Logging requirements'),('siem_integration','SIEM integration'),('monitoring_requirements','Monitoring requirements'),('security_requirements','Security requirements'),('compliance_requirements','Compliance requirements'),('responsibility_notes','Security responsibility notes')] %}
+          {{ area(key,label,config.security[key],config.section_flags.include_security and key in ['iam_model','encryption_requirements','logging_requirements','security_requirements']) }}
+        {% endfor %}
+      </div>
+    {% elif active_section == 'operations-resilience' %}
+      <div class="sdd-grid">
+        <label class="sdd-field"><span>Implementation provider <small>Required</small></span><select name="implementation_provider">{% for value,label in [('customer','Customer'),('partner','Partner'),('oracle','Oracle')] %}<option value="{{ value }}" {% if config.operations.implementation_provider == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+        {{ area('operating_model','Operating model',config.operations.operating_model) }}
+        {{ area('monitoring_approach','Monitoring approach',config.operations.monitoring_approach) }}
+        {{ area('support_model','Support model',config.operations.support_model) }}
+        {{ area('escalation_model','Escalation model',config.operations.escalation_model) }}
+        {{ area('operational_ownership','Operational ownership',config.operations.operational_ownership) }}
+        {{ area('service_management_integration','Service-management integration',config.operations.service_management_integration) }}
+        {% for key,label,textkey in [('backup','Backup','backup_requirements'),('disaster_recovery','Disaster recovery','dr_requirements'),('ha','High availability','ha_requirements')] %}
+          <label class="sdd-field"><span>{{ label }} status</span><select name="{{ key }}_status">{% for value,text in [('enabled','Enabled'),('not_applicable','Not applicable'),('not_provided','Not provided')] %}<option value="{{ value }}" {% if config.operations[key].status == value %}selected{% endif %}>{{ text }}</option>{% endfor %}</select></label>
+          {{ area(textkey,label ~ ' requirements',config.operations[textkey]) }}
+        {% endfor %}
+      </div>
+    {% elif active_section == 'migration-transition' %}
+      <div class="sdd-grid">
+        {% for key,label in [('migration_method','Migration method'),('migration_tooling','Migration tooling'),('migration_wave_strategy','Migration-wave strategy'),('migration_window','Migration window'),('downtime_tolerance','Downtime tolerance'),('validation_approach','Validation approach'),('rollback_approach','Rollback approach'),('transition_plan_summary','Transition-plan summary')] %}{{ area(key,label,config.delivery[key]) }}{% endfor %}
+      </div>
+      <div class="sdd-options"><label><input type="checkbox" name="include_raci" value="1" {% if config.section_flags.include_raci %}checked{% endif %}/> Include RACI</label><label><input type="checkbox" name="include_risks" value="1" {% if config.section_flags.include_risks %}checked{% endif %}/> Include risks</label><label><input type="checkbox" name="include_transition" value="1" {% if config.section_flags.include_transition %}checked{% endif %}/> Include transition milestones</label></div>
+      {% for prefix,title,fields,rows in [
+        ('scope','Implementation scope',[('activity','Activity'),('deliverable','Deliverable'),('owner','Owner')],config.delivery.implementation_scope),
+        ('milestones','Transition milestones',[('milestone','Milestone'),('owner','Owner'),('date','Target date'),('dependency','Dependency'),('status','Status'),('notes','Notes')],config.delivery.transition_milestones),
+        ('risks','Risks',[('id','ID'),('description','Description'),('impact','Impact'),('mitigation','Mitigation'),('owner','Owner')],config.delivery.risks),
+        ('obligations','Customer obligations',[('statement','Obligation'),('owner','Owner'),('due_date','Due date')],config.delivery.customer_obligations),
+        ('raci','RACI',[('activity','Activity'),('customer','Customer'),('partner','Partner'),('oracle','Oracle'),('notes','Notes')],config.delivery.raci)
+      ] %}
+      <section class="sdd-repeat" data-repeat-group="{{ prefix }}"><header><h3>{{ title }}</h3><button type="button" class="sdd-button sdd-button--small" data-add-row>Add row</button></header><div data-repeat-rows>{% for row in rows or [{}] %}<div class="sdd-repeat__row" data-repeat-row>{% for key,label in fields %}<input name="{{ prefix }}_{{ key }}[]" aria-label="{{ label }}" placeholder="{{ label }}" value="{{ row[key] or '' }}" />{% endfor %}<button type="button" class="sdd-repeat__remove" data-remove-row>Remove</button></div>{% endfor %}</div></section>
+      {% endfor %}
+    {% endif %}
+    <footer class="sdd-wizard__actions">
+      {% if previous_section %}<a class="sdd-button sdd-button--secondary" href="{{ url_for('step4_sdd_configure_section', section=previous_section) }}">Previous</a>{% endif %}
+      <button class="sdd-button sdd-button--secondary" type="submit" name="wizard_action" value="save">Save Draft</button>
+      <button class="sdd-button" type="submit" name="wizard_action" value="continue">Save & Continue</button>
+      <a class="sdd-button sdd-button--link" href="{{ url_for('step4', tab='price') }}">Return to Results & Export</a>
+    </footer>
+  </form>
+  {% else %}
+    <section class="sdd-review">
+      <header class="sdd-wizard__section-head"><p>Step 7 of 7</p><h2>Review & Generate</h2></header>
+      <div class="sdd-review__grid">
+        <article><h3>Document identity</h3><p><strong>{{ config.customer_document.customer_legal_name or 'Not provided' }}</strong></p><p>{{ config.customer_document.project_name or 'Not provided' }} · Version {{ config.customer_document.version }}</p><a href="{{ url_for('step4_sdd_configure_section', section='customer-project') }}">Edit Customer & Project</a></article>
+        <article><h3>Business context</h3><p>{{ config.business.solution_scope_summary or 'Not provided' }}</p><a href="{{ url_for('step4_sdd_configure_section', section='business-requirements') }}">Edit Business Requirements</a></article>
+        <article><h3>OCI network</h3><p><strong>{{ config.network.oci_region or 'Region not provided' }}</strong></p><p>{{ config.network.vcn_name or 'VCN not provided' }}{% if config.network.vcn_cidr %} · {{ config.network.vcn_cidr }}{% endif %}</p><a href="{{ url_for('step4_sdd_configure_section', section='network-design') }}">Edit OCI Network Design</a></article>
+        <article><h3>Security & compliance</h3><p><strong>{{ 'Enabled' if config.section_flags.include_security else 'Disabled' }}</strong></p><p>{{ config.security.security_requirements or 'No customer-specific security requirement provided' }}</p><a href="{{ url_for('step4_sdd_configure_section', section='security-compliance') }}">Edit Security & Compliance</a></article>
+        <article><h3>Operations & resilience</h3><p><strong>{{ config.operations.implementation_provider|title }}</strong></p><p>{{ config.operations.operating_model or 'Operating model not provided' }}</p><a href="{{ url_for('step4_sdd_configure_section', section='operations-resilience') }}">Edit Operations & Resilience</a></article>
+        <article><h3>Migration & transition</h3><p><strong>{{ config.delivery.migration_method or 'Migration method not provided' }}</strong></p><p>{{ config.delivery.transition_plan_summary or 'Transition plan not provided' }}</p><a href="{{ url_for('step4_sdd_configure_section', section='migration-transition') }}">Edit Migration & Transition</a></article>
+        <article><h3>Selected workload</h3><p><strong>{{ sdd_snapshot.scope.selected_vm_count or 0 }} VMs</strong></p><p>{{ sdd_snapshot.scope.selected_vcpu or 0 }} vCPU · {{ sdd_snapshot.scope.selected_ram_gb or 0 }} GB RAM · {{ sdd_snapshot.scope.selected_storage_tb or 0 }} TB</p></article>
+        <article><h3>OCVS sizing</h3><p><strong>{{ 'Multi-cluster' if sdd_snapshot.sizing.topology == 'multi' else 'Single-cluster' }}</strong></p><p>{{ sdd_snapshot.sizing.target_cluster_count or 0 }} target cluster(s) · {{ sdd_snapshot.sizing.total_nodes or 0 }} nodes</p></article>
+        <article><h3>Commercial data</h3><p><strong>{{ 'Available' if sdd_snapshot.commercial.pricing_available else 'Not available' }}</strong></p><p>{{ sdd_snapshot.commercial.currency_code or '' }} · {{ sdd_snapshot.sizing.commitment_term or 'Not provided' }}</p></article>
+      </div>
+      <section class="sdd-review__status"><h3>Conditional sections</h3><p>Security: <strong>{{ 'Enabled' if config.section_flags.include_security else 'Disabled' }}</strong> · RACI: <strong>{{ 'Enabled' if config.section_flags.include_raci else 'Disabled' }}</strong> · Risks: <strong>{{ 'Enabled' if config.section_flags.include_risks else 'Disabled' }}</strong> · Transition: <strong>{{ 'Enabled' if config.section_flags.include_transition else 'Disabled' }}</strong></p></section>
+      {% if sdd_snapshot.sizing.topology == 'multi' %}<section class="sdd-review__clusters"><h3>Saved target clusters</h3><div class="sdd-review__table"><div class="sdd-review__row sdd-review__row--head"><span>Cluster</span><span>Role</span><span>Source clusters</span><span>Shape</span><span>Nodes</span><span>Storage</span></div>{% for row in sdd_snapshot.target_clusters %}<div class="sdd-review__row"><span>{{ row.name }}</span><span>{{ row.role|replace('_',' ')|title }}</span><span>{{ row.assigned_source_clusters|join(', ') }}</span><span>{{ row.selected_shape }}</span><span>{{ row.total_nodes }}</span><span>{{ row.storage_requirement_tb }} TB</span></div>{% endfor %}</div></section>{% endif %}
+      <section class="sdd-review__status"><h3>Readiness</h3>{% if sdd_readiness.blocking_errors %}<ul class="is-error">{% for item in sdd_readiness.blocking_errors %}<li>{{ item }}</li>{% endfor %}</ul>{% else %}<p class="is-ready">All blocking checks passed.</p>{% endif %}{% if sdd_readiness.warnings %}<ul>{% for item in sdd_readiness.warnings %}<li>{{ item }}</li>{% endfor %}</ul>{% endif %}</section>
+      <footer class="sdd-wizard__actions">
+        <a class="sdd-button sdd-button--secondary" href="{{ url_for('step4_sdd_configure_section', section=previous_section) }}">Previous</a>
+        <form method="post" action="{{ url_for('step4_sdd') }}"><button class="sdd-button sdd-button--secondary" name="action" value="validate_sdd">Validate Draft SDD</button></form>
+        <form method="post" action="{{ url_for('step4_sdd') }}"><button class="sdd-button" name="action" value="generate_sdd" {% if not sdd_readiness.ready %}disabled{% endif %}>Generate Draft SDD</button></form>
+        <a class="sdd-button" href="{{ url_for('step4_sdd_review') }}">Open Technical Review</a>
+        <a class="sdd-button sdd-button--link" href="{{ url_for('step4', tab='price') }}">Return to Results & Export</a>
+      </footer>
+    </section>
+  {% endif %}
+  <p class="sdd-wizard__draft-note">DRAFT — NOT FOR CUSTOMER DELIVERY</p>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/sdd-wizard.js') }}" defer></script>{% endblock %}

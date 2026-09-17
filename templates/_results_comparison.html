@@ -21,10 +21,10 @@
     </div>
   </header>
 
-  <div class="results-scenario-grid">
+  <div class="results-scenario-grid {% if scenario_ui.ocvs_only and results.scenarios and results.scenarios[0].multi_cluster %}results-scenario-grid--multicluster{% endif %}">
     {% for scenario in results.scenarios %}
       <article
-        class="result-scenario result-scenario--{{ scenario.id }}"
+        class="result-scenario result-scenario--{{ scenario.id }} {% if scenario.multi_cluster %}result-scenario--multicluster{% endif %}"
         data-result-scenario="{{ scenario.id }}"
         data-readiness-state="{{ scenario.readiness_state }}"
         data-rankable="{{ 'true' if scenario.rankable else 'false' }}"
@@ -47,6 +47,7 @@
         </header>
         <p class="result-scenario__intro">{{ scenario.intro }}</p>
 
+        <div class="{% if scenario.multi_cluster %}result-multicluster-overview{% endif %}">
         <dl class="result-status-grid">
           <div>
             <dt>Technical eligibility</dt>
@@ -90,7 +91,66 @@
             <dd>{{ pricing_symbol }}{{ "{:,.0f}".format(scenario.cost_per_vm) }}</dd>
           </div>
         </dl>
+        </div>
 
+        {% if scenario.multi_cluster %}
+        <section class="result-multicluster-placement" aria-labelledby="result-{{ scenario.id }}-placement">
+          <h3 id="result-{{ scenario.id }}-placement">Placement summary</h3>
+          <dl>
+            <div><dd>{{ "{:,}".format(scenario.ocvs_vm_count) }}</dd><dt>OCVS VMs</dt></div>
+            <div><dd>{{ scenario.multi_cluster.cluster_count }}</dd><dt>Target clusters</dt></div>
+            <div><dd>{{ "{:,}".format(scenario.multi_cluster.total_hosts) }}</dd><dt>Total OCVS nodes</dt></div>
+            <div><dd>{{ scenario.multi_cluster.sddc_count }}</dd><dt>SDDC</dt></div>
+          </dl>
+        </section>
+
+        <section class="result-multicluster-distribution" aria-labelledby="result-{{ scenario.id }}-distribution">
+          <h3 id="result-{{ scenario.id }}-distribution">Target Cluster Distribution</h3>
+          <div class="result-multicluster-table-wrap">
+            <table class="result-multicluster-table">
+              <thead>
+                <tr>
+                  <th>Target cluster</th>
+                  <th>Source clusters</th>
+                  <th>OCVS VMs</th>
+                  <th>Selected shape</th>
+                  <th>Total nodes</th>
+                  <th>Sizing driver</th>
+                  <th>Monthly cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for cluster in scenario.multi_cluster.clusters %}
+                  <tr>
+                    <th scope="row">{{ cluster.name }}</th>
+                    <td>{{ cluster.source_clusters|join(', ') }}</td>
+                    <td>{{ "{:,}".format(cluster.vm_count) }}</td>
+                    <td>{{ cluster.selected.shape }}</td>
+                    <td>{{ "{:,}".format(cluster.selected.host_count) }} nodes</td>
+                    <td>{{ cluster.selected.constraint|capitalize }}</td>
+                    <td>{{ pricing_symbol }}{{ "{:,.0f}".format(cluster.monthly_cost) }}/month</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="result-multicluster-aggregate" aria-labelledby="result-{{ scenario.id }}-aggregate">
+          <h3 id="result-{{ scenario.id }}-aggregate">Aggregate multi-cluster sizing</h3>
+          <dl>
+            <div><dd>{{ scenario.multi_cluster.cluster_count }}</dd><dt>clusters</dt></div>
+            <div><dd>{{ "{:,}".format(scenario.multi_cluster.total_hosts) }}</dd><dt>total nodes</dt></div>
+            <div><dd>{{ pricing_symbol }}{{ "{:,.0f}".format(scenario.multi_cluster.total_monthly_cost) }}</dd><dt>per month</dt></div>
+            <div><dd>{{ pricing_symbol }}{{ "{:,.0f}".format(scenario.multi_cluster.total_annual_cost) }}</dd><dt>per year</dt></div>
+          </dl>
+        </section>
+
+        <section class="result-multicluster-assumption" aria-labelledby="result-{{ scenario.id }}-assumption">
+          <h3 id="result-{{ scenario.id }}-assumption">Assumptions and sizing</h3>
+          <p>Each target cluster is sized independently using its assigned source workload and saved capacity policy.</p>
+        </section>
+        {% else %}
         <section class="result-detail-section" aria-labelledby="result-{{ scenario.id }}-placement">
           <h3 id="result-{{ scenario.id }}-placement">Placement split</h3>
           <div class="result-placement">
@@ -137,6 +197,7 @@
             </ul>
           </section>
         </div>
+        {% endif %}
       </article>
     {% endfor %}
   </div>

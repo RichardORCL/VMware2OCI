@@ -3,6 +3,7 @@
   aria-labelledby="results-export-title"
   data-customer-ready-export="{{ 'true' if results.customer_ready_export else 'false' }}"
 >
+  {% set export_scenario_id = scenario_ui.id if scenario_ui is defined else 'compute' %}
   <header class="results-export__heading">
     <div>
       <p class="results-eyebrow">Export center</p>
@@ -15,6 +16,58 @@
   <p class="results-export__note">
     The Excel workbook remains available while readiness is incomplete. The status badge shows whether the workbook is still draft or customer-ready.
   </p>
+  {% if export_scenario_id == 'ocvs' and sdd_configuration and sdd_readiness %}
+    <section class="sdd-export-panel" aria-labelledby="sdd-export-title">
+      <header class="sdd-export-panel__header">
+        <div>
+          <p class="results-eyebrow">Document generation</p>
+          <h3 id="sdd-export-title">Solution Definition Document</h3>
+        </div>
+        <span class="results-export__state">{{ sdd_configuration.review_workflow.status|replace('_',' ')|title }}</span>
+      </header>
+      <div class="sdd-export-panel__summary">
+        <span><strong>Topology</strong> {{ 'Multi-cluster' if sdd_source_summary.topology == 'multi' else 'Single-cluster' }}</span>
+        <span><strong>Selected workload</strong> {{ sdd_source_summary.selected_vm_count }} VMs</span>
+        <span><strong>Target clusters</strong> {{ sdd_source_summary.target_cluster_count }}</span>
+        <span><strong>Saved sizing</strong> {{ sdd_source_summary.saved_at or 'Not saved' }}</span>
+        <span><strong>Status</strong> {{ 'Ready' if sdd_readiness.ready else 'Needs information' }}</span>
+        <span><strong>Configuration</strong> {{ 'Stale' if sdd_readiness.configuration_is_stale else 'Current' }}</span>
+        <span><strong>Completion</strong> {{ sdd_readiness.completion_percentage or 0 }}%</span>
+        <span><strong>Blocking issues</strong> {{ sdd_readiness.blocking_errors|length }}</span>
+        <span><strong>Warnings</strong> {{ sdd_readiness.warnings|length }}</span>
+        <span><strong>Document version</strong> {{ sdd_configuration.review_workflow.final_version or sdd_configuration.review_workflow.current_revision }}</span>
+        <span><strong>Open blockers</strong> {{ sdd_configuration.review_workflow.comments|selectattr('status','equalto','open')|selectattr('severity','equalto','blocking')|list|length }}</span>
+        <span><strong>Reviewers</strong> {{ sdd_configuration.review_workflow.reviewers|selectattr('status','equalto','completed')|list|length }}/{{ sdd_configuration.review_workflow.reviewers|length }}</span>
+        <span><strong>Approvals</strong> {{ sdd_configuration.review_workflow.approvers|selectattr('status','equalto','approved')|list|length }}/{{ sdd_configuration.review_workflow.approvers|length }}</span>
+        {% if sdd_governance %}<span><strong>Working revision</strong> {{ sdd_governance.current_working_revision }}</span><span><strong>Latest finalized</strong> {{ sdd_governance.latest_finalized_version or 'None' }}</span><span><strong>Latest delivered</strong> {{ sdd_governance.latest_delivered_version or 'Not delivered' }}</span><span><strong>Artifact integrity</strong> {{ sdd_governance.versions[0].integrity if sdd_governance.versions else 'No artifact' }}</span>{% endif %}
+      </div>
+      {% if sdd_governance and sdd_governance.unpublished_changes %}<div class="sdd-export-panel__validation sdd-export-panel__validation--error"><strong>Unpublished changes</strong><p>The assessment changed after finalization. Start a new governed SDD revision to publish these changes.</p></div>{% endif %}
+      {% if sdd_readiness.blocking_errors %}
+        <div class="sdd-export-panel__validation sdd-export-panel__validation--error">
+          <strong>Complete before generation</strong>
+          <ul>{% for item in sdd_readiness.blocking_errors %}<li>{{ item }}</li>{% endfor %}</ul>
+        </div>
+      {% endif %}
+      {% if sdd_readiness.warnings %}
+        <div class="sdd-export-panel__validation">
+          <strong>Draft warnings</strong>
+          <ul>{% for item in sdd_readiness.warnings %}<li>{{ item }}</li>{% endfor %}</ul>
+        </div>
+      {% endif %}
+      <div class="results-export__actions">
+        <a href="{{ url_for('step4_sdd_configure') }}" class="results-button results-button--secondary">Configure Draft SDD</a>
+        <form method="post" action="{{ url_for('step4_sdd') }}">
+          <button type="submit" name="action" value="validate_sdd" class="results-button results-button--secondary">Validate Draft SDD</button>
+        </form>
+        <form method="post" action="{{ url_for('step4_sdd') }}">
+          <button type="submit" name="action" value="generate_sdd" class="results-button" {% if not sdd_readiness.ready %}disabled aria-disabled="true"{% endif %}>Generate Draft SDD</button>
+        </form>
+        <a href="{{ url_for('step4_sdd_review') }}" class="results-button results-button--secondary">Open SDD Review</a>
+        {% if sdd_governance and sdd_governance.versions %}<a href="{{ url_for('step4_sdd_delivery') }}" class="results-button results-button--secondary">Customer Delivery</a><a href="{{ url_for('step4_sdd_acceptance') }}" class="results-button results-button--secondary">Acceptance &amp; Handover</a><a href="{{ url_for('step4_sdd_final_download', file_format='docx') }}" class="results-button">Download Final DOCX</a><a href="{{ url_for('step4_sdd_final_download', file_format='pdf') }}" class="results-button">Download Final PDF</a><a href="{{ url_for('step4_sdd_delivery_package', artifact_id=sdd_governance.versions[0].artifact_id) }}" class="results-button">Delivery Package</a>{% endif %}
+      </div>
+      <p class="results-export__note">Draft downloads retain the watermark. Customer-ready files are available only after review, approval, and finalization.</p>
+    </section>
+  {% endif %}
   <div class="results-export__actions">
     <form method="post" action="{{ url_for('index') }}">
       <input type="hidden" name="action" value="save_assessment" />
@@ -59,9 +112,19 @@
       <button type="submit" class="results-button">{{ results.excel_export_label }}</button>
     </form>
     <form method="post" action="{{ url_for('step4') }}">
+      <input type="hidden" name="action" value="export_migration_csv" />
+      <input type="hidden" name="active_scenario" value="price" />
+      <button type="submit" class="results-button results-button--secondary">Migration plan CSV</button>
+    </form>
+    <form method="post" action="{{ url_for('step4') }}">
+      <input type="hidden" name="action" value="export_migration_json" />
+      <input type="hidden" name="active_scenario" value="price" />
+      <button type="submit" class="results-button results-button--secondary">Migration plan JSON</button>
+    </form>
+    <form method="post" action="{{ url_for('step4') }}">
       <input type="hidden" name="action" value="generate_presentation" />
       <input type="hidden" name="active_scenario" value="price" />
-      {% if scenario_ui.id == 'compute' %}
+      {% if export_scenario_id == 'compute' %}
         <label class="results-export__presentation-select">
           <span>Presentation scenario</span>
           <select name="presentation_scenario" data-presentation-scenario>
@@ -72,7 +135,7 @@
         </label>
       {% else %}
         <span class="results-export__presentation-select" aria-label="Presentation template selected automatically">
-          {% if scenario_ui.id == 'ocvs' %}Oracle Cloud VMware Solution{% elif scenario_ui.id == 'capacity' %}Capacity Expansion with OCVS{% else %}Disaster Recovery{% endif %}
+          {% if export_scenario_id == 'ocvs' %}Oracle Cloud VMware Solution{% elif export_scenario_id == 'capacity' %}Capacity Expansion with OCVS{% else %}Disaster Recovery{% endif %}
         </span>
       {% endif %}
       <button type="submit" class="results-button">Generate Presentation</button>

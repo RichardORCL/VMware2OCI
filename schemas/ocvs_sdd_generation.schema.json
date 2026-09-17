@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/schemas/ocvs-sdd-generation.schema.json",
+  "title": "OCVS SDD Draft Generation Input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "document", "business", "scope", "sizing", "target_clusters", "network", "security", "operations", "commercial", "delivery", "section_flags"],
+  "$defs": {
+    "nonEmpty": {"type": "string", "minLength": 1},
+    "nonNegative": {"type": "number", "minimum": 0},
+    "person": {
+      "type": "object",
+      "required": ["name", "email", "role", "company"],
+      "properties": {"name": {"$ref": "#/$defs/nonEmpty"}, "email": {"type": "string", "format": "email"}, "role": {"$ref": "#/$defs/nonEmpty"}, "company": {"$ref": "#/$defs/nonEmpty"}}
+    },
+    "sourceCluster": {
+      "type": "object",
+      "required": ["name", "vm_count", "powered_on", "powered_off", "vcpu", "ram_gb", "storage_tb"],
+      "properties": {"name": {"$ref": "#/$defs/nonEmpty"}, "vm_count": {"type": "integer", "minimum": 0}, "powered_on": {"type": "integer", "minimum": 0}, "powered_off": {"type": "integer", "minimum": 0}, "vcpu": {"type": "integer", "minimum": 0}, "ram_gb": {"$ref": "#/$defs/nonNegative"}, "storage_tb": {"$ref": "#/$defs/nonNegative"}}
+    },
+    "targetCluster": {
+      "type": "object",
+      "required": ["name", "role", "assigned_source_clusters", "assigned_vm_count", "selected_profile", "selected_shape", "sizing_driver", "workload_nodes", "spare_nodes", "total_nodes", "storage_requirement_tb", "storage_architecture"],
+      "properties": {
+        "name": {"$ref": "#/$defs/nonEmpty"},
+        "role": {"enum": ["unified_management", "workload"]},
+        "assigned_source_clusters": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/nonEmpty"}},
+        "assigned_vm_count": {"type": "integer", "minimum": 1},
+        "selected_profile": {"$ref": "#/$defs/nonEmpty"}, "selected_shape": {"$ref": "#/$defs/nonEmpty"}, "sizing_driver": {"$ref": "#/$defs/nonEmpty"},
+        "workload_nodes": {"type": "integer", "minimum": 1}, "spare_nodes": {"type": "integer", "minimum": 0}, "total_nodes": {"type": "integer", "minimum": 1},
+        "storage_requirement_tb": {"$ref": "#/$defs/nonNegative"}, "storage_architecture": {"enum": ["vSAN", "OCI Block Volume (Block Storage)"]}, "monthly_cost": {"type": ["number", "null"], "minimum": 0}
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "document": {
+      "type": "object",
+      "required": ["customer_name", "customer_legal_name", "project_name", "assessment_name", "assessment_date", "rvtools_file_name", "document_author", "document_author_email", "confidentiality_classification", "draft_status"],
+      "properties": {
+        "customer_name": {"$ref": "#/$defs/nonEmpty"}, "customer_legal_name": {"$ref": "#/$defs/nonEmpty"}, "project_name": {"$ref": "#/$defs/nonEmpty"}, "assessment_name": {"$ref": "#/$defs/nonEmpty"},
+        "assessment_date": {"type": "string", "format": "date"}, "rvtools_file_name": {"$ref": "#/$defs/nonEmpty"}, "generation_date": {"type": "string", "format": "date"},
+        "document_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"}, "document_author": {"$ref": "#/$defs/nonEmpty"}, "document_author_email": {"type": "string", "format": "email"},
+        "confidentiality_classification": {"$ref": "#/$defs/nonEmpty"}, "draft_status": {"const": true}, "copyright_year": {"type": "integer", "minimum": 2020}, "version_comment": {"type": "string"}
+      }
+    },
+    "business": {
+      "type": "object",
+      "required": ["customer_business_context", "business_drivers", "solution_scope_summary", "business_requirements", "technical_requirements", "compliance_requirements", "success_criteria"],
+      "properties": {"customer_business_context": {"$ref": "#/$defs/nonEmpty"}, "business_drivers": {"$ref": "#/$defs/nonEmpty"}, "solution_scope_summary": {"$ref": "#/$defs/nonEmpty"}, "business_requirements": {"$ref": "#/$defs/nonEmpty"}, "technical_requirements": {"$ref": "#/$defs/nonEmpty"}, "compliance_requirements": {"$ref": "#/$defs/nonEmpty"}, "success_criteria": {"$ref": "#/$defs/nonEmpty"}}
+    },
+    "scope": {
+      "type": "object",
+      "required": ["selected_vm_count", "powered_on_vm_count", "powered_off_vm_count", "selected_vcpu", "selected_ram_gb", "selected_storage_tb", "operating_system_summary", "source_vcenters", "source_datacenters", "source_clusters"],
+      "properties": {"selected_vm_count": {"type": "integer", "minimum": 1}, "powered_on_vm_count": {"type": "integer", "minimum": 0}, "powered_off_vm_count": {"type": "integer", "minimum": 0}, "selected_vcpu": {"type": "integer", "minimum": 1}, "selected_ram_gb": {"$ref": "#/$defs/nonNegative"}, "selected_storage_tb": {"$ref": "#/$defs/nonNegative"}, "operating_system_summary": {"$ref": "#/$defs/nonEmpty"}, "source_vcenters": {"type": "array", "items": {"$ref": "#/$defs/nonEmpty"}}, "source_datacenters": {"type": "array", "items": {"$ref": "#/$defs/nonEmpty"}}, "source_clusters": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/sourceCluster"}}}
+    },
+    "sizing": {
+      "type": "object",
+      "required": ["business_scenario", "topology", "sddc_count", "target_cluster_count", "selected_profile", "selected_shape", "sizing_driver", "workload_nodes", "spare_nodes", "total_nodes", "workload_capacity_storage_tb", "storage_architecture", "vcpu_per_ocpu", "cpu_headroom_pct", "ram_headroom_pct", "storage_headroom_pct", "dense_vsan_usable_pct", "standard_storage_vpu", "commitment_term"],
+      "properties": {"business_scenario": {"const": "ocvs"}, "topology": {"enum": ["single", "multi"]}, "sddc_count": {"type": "integer", "minimum": 1}, "target_cluster_count": {"type": "integer", "minimum": 1, "maximum": 6}, "selected_profile": {"$ref": "#/$defs/nonEmpty"}, "selected_shape": {"$ref": "#/$defs/nonEmpty"}, "sizing_driver": {"$ref": "#/$defs/nonEmpty"}, "workload_nodes": {"type": "integer", "minimum": 1}, "spare_nodes": {"type": "integer", "minimum": 0}, "total_nodes": {"type": "integer", "minimum": 1}, "workload_capacity_storage_tb": {"$ref": "#/$defs/nonNegative"}, "storage_architecture": {"enum": ["vSAN", "OCI Block Volume (Block Storage)", "Mixed"]}, "vcpu_per_ocpu": {"type": "number", "exclusiveMinimum": 0}, "cpu_headroom_pct": {"type": "number", "minimum": 0, "maximum": 99}, "ram_headroom_pct": {"type": "number", "minimum": 0, "maximum": 99}, "storage_headroom_pct": {"type": "number", "minimum": 0, "maximum": 99}, "dense_vsan_usable_pct": {"type": "number", "exclusiveMinimum": 0, "maximum": 100}, "standard_storage_vpu": {"type": "number", "minimum": 10, "maximum": 120}, "commitment_term": {"enum": ["Pay as you go", "1-year", "3-year"]}, "summary_narrative": {"type": "string"}}
+    },
+    "target_clusters": {"type": "array", "minItems": 1, "maxItems": 6, "items": {"$ref": "#/$defs/targetCluster"}},
+    "network": {"type": "object", "required": ["oci_region", "tenancy_name_or_ocid", "compartment_name_or_ocid", "vcn_name", "vcn_cidr", "sddc_cidr", "workload_cidrs", "management_cidrs", "vmotion_cidrs", "replication_cidrs", "hcx_cidrs", "dns", "ntp", "connectivity", "drg", "segments"], "properties": {"segments": {"type": "array", "items": {"type": "object", "required": ["name", "cidr", "purpose"]}}}, "additionalProperties": true},
+    "security": {"type": "object", "required": ["include_section", "iam_model", "encryption", "logging", "monitoring", "requirements"], "additionalProperties": true},
+    "operations": {"type": "object", "required": ["implementation_provider", "operating_model", "monitoring", "backup", "disaster_recovery", "ha"], "additionalProperties": true},
+    "commercial": {"type": "object", "required": ["currency_code", "pricing_available", "iaas_discount_pct", "commitment_term", "monthly_cost", "annual_cost", "bom_rows"], "additionalProperties": true},
+    "delivery": {"type": "object", "required": ["document_history", "reviewers", "approvers", "project_team", "assumptions", "risks", "raci", "customer_obligations", "implementation_scope", "transition_milestones"], "additionalProperties": true},
+    "section_flags": {"type": "object", "required": ["include_pricing", "include_raci", "include_risks", "include_transition", "include_oracle_lift"], "additionalProperties": {"type": "boolean"}},
+    "specialist_review_warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}

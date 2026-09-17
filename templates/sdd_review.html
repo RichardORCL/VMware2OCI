@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}SDD Technical Review{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='css/sdd-wizard.css') }}" /><link rel="stylesheet" href="{{ url_for('static', filename='css/sdd-review.css') }}" />{% endblock %}
+{% block stage_content %}
+<section class="sdd-wizard sdd-review-workspace" aria-labelledby="sdd-review-title">
+  <header class="sdd-wizard__header">
+    <div><p class="sdd-wizard__eyebrow">Move to OCVS · Controlled document workflow</p><h1 id="sdd-review-title">SDD Technical Review</h1><p>{{ config.customer_document.customer_legal_name or 'Customer not provided' }} · {{ config.customer_document.project_name or 'Project not provided' }}</p></div>
+    <div class="sdd-wizard__completion"><strong>{{ sdd_review.workflow.current_revision }}</strong><span>{{ sdd_review.status|replace('_',' ')|title }}</span></div>
+  </header>
+
+  {% if sdd_review.stale or sdd_review.workflow.stale_reason %}<div class="sdd-wizard__message sdd-wizard__message--error" role="alert"><strong>Review is stale</strong><p>{{ sdd_review.workflow.stale_reason or 'The selected workload, sizing, pricing, topology, or SDD content changed.' }}</p></div>{% endif %}
+  <div class="sdd-review__grid">
+    <article><h3>Configuration</h3><p><strong>{{ sdd_readiness.completion_percentage }}% complete</strong></p><p>{{ 'Current' if not sdd_readiness.configuration_is_stale else 'Stale' }} · {{ sdd_readiness.blocking_errors|length }} blocking issue(s)</p></article>
+    <article><h3>Selected workload</h3><p><strong>{{ sdd_snapshot.scope.selected_vm_count or 0 }} VMs</strong></p><p>{{ sdd_snapshot.scope.selected_vcpu or 0 }} vCPU · {{ sdd_snapshot.scope.selected_ram_gb or 0 }} GB RAM</p></article>
+    <article><h3>OCVS topology</h3><p><strong>{{ 'Multi-cluster' if sdd_snapshot.sizing.topology == 'multi' else 'Single-cluster' }}</strong></p><p>{{ sdd_snapshot.sizing.target_cluster_count or 0 }} cluster(s) · {{ sdd_snapshot.sizing.total_nodes or 0 }} hosts</p></article>
+    <article><h3>Review progress</h3><p><strong>{{ sdd_review.reviewer_completed }}/{{ sdd_review.reviewer_required }} reviewers</strong></p><p>{{ sdd_review.approver_completed }}/{{ sdd_review.approver_total }} approvers · {{ sdd_review.open_blocking_comments|length }} open blocker(s)</p></article>
+  </div>
+
+  <section class="sdd-review-card"><h2>Reviewers and approvers</h2><div class="sdd-review-people">
+    <div><h3>Technical reviewers</h3>{% for person in sdd_review.workflow.reviewers %}<article class="sdd-person"><div><strong>{{ person.name }}</strong><span>{{ person.role or 'Reviewer' }} · {{ person.company or 'Company not provided' }}</span><small>{{ person.email }} · {{ person.status|title }}</small></div>{% if sdd_review.status == 'in_review' and person.status != 'completed' %}<form method="post"><input type="hidden" name="action" value="complete_review"/><input type="hidden" name="reviewer_id" value="{{ person.id }}"/><input type="hidden" name="actor" value="{{ person.name }}"/><button class="sdd-button sdd-button--small">Complete review</button></form>{% endif %}{% if sdd_review.status in ['draft','changes_requested'] %}<form method="post"><input type="hidden" name="action" value="remove_person"/><input type="hidden" name="person_id" value="{{ person.id }}"/><button class="sdd-repeat__remove" aria-label="Remove {{ person.name }}">Remove</button></form>{% endif %}</article>{% else %}<p>No reviewer assigned.</p>{% endfor %}
+      {% if sdd_review.status in ['draft','changes_requested'] %}
+      <form class="sdd-inline-form" method="post"><input type="hidden" name="action" value="add_reviewer"/><input name="name" placeholder="Reviewer name" required/><input name="email" type="email" placeholder="E-mail" required/><input name="role" placeholder="Role"/><input name="company" placeholder="Company"/><button class="sdd-button sdd-button--small">Add reviewer</button></form>
+      {% endif %}
+    </div>
+    <div><h3>Approvers</h3>{% for person in sdd_review.workflow.approvers %}<article class="sdd-person"><div><strong>{{ person.name }}</strong><span>{{ person.role or 'Approver' }} · {{ person.company or 'Company not provided' }}</span><small>{{ person.email }} · {{ person.status|title }}</small></div>{% if sdd_review.status == 'in_review' and sdd_review.can_approve and person.status != 'approved' %}<form method="post"><input type="hidden" name="action" value="approve"/><input type="hidden" name="approver_id" value="{{ person.id }}"/><input type="hidden" name="actor" value="{{ person.name }}"/><button class="sdd-button sdd-button--small">Approve SDD</button></form>{% endif %}{% if sdd_review.status in ['draft','changes_requested'] %}<form method="post"><input type="hidden" name="action" value="remove_person"/><input type="hidden" name="person_id" value="{{ person.id }}"/><button class="sdd-repeat__remove" aria-label="Remove {{ person.name }}">Remove</button></form>{% endif %}</article>{% else %}<p>No approver assigned.</p>{% endfor %}
+      {% if sdd_review.status in ['draft','changes_requested'] %}
+      <form class="sdd-inline-form" method="post"><input type="hidden" name="action" value="add_approver"/><input name="name" placeholder="Approver name" required/><input name="email" type="email" placeholder="E-mail" required/><input name="role" placeholder="Role"/><input name="company" placeholder="Company"/><button class="sdd-button sdd-button--small">Add approver</button></form>
+      {% endif %}
+    </div>
+  </div></section>
+
+  <section class="sdd-review-card"><h2>Review comments</h2>
+    <form class="sdd-comment-form" method="post"><input type="hidden" name="action" value="add_comment"/><label>Section<input name="section" value="General" required/></label><label>Severity<select name="severity"><option value="informational">Informational</option><option value="warning">Warning</option><option value="blocking">Blocking</option></select></label><label>Author<input name="actor" required/></label><label class="sdd-field--wide">Comment<textarea name="comment" rows="3" required></textarea></label><button class="sdd-button">Add comment</button></form>
+    <div class="sdd-comments">{% for item in sdd_review.workflow.comments|reverse %}<article class="sdd-comment sdd-comment--{{ item.severity }}"><header><strong>{{ item.section }} · {{ item.severity|title }}</strong><span>{{ item.status|title }}</span></header><p>{{ item.comment }}</p><small>{{ item.author }} · {{ item.created_at }}</small>{% if item.status == 'open' %}<form method="post"><input type="hidden" name="action" value="resolve_comment"/><input type="hidden" name="comment_id" value="{{ item.id }}"/><input name="actor" placeholder="Resolved by" required/><input name="resolution_note" placeholder="Resolution note" required/><button class="sdd-button sdd-button--small">Resolve Comment</button></form>{% else %}<p><strong>Resolution:</strong> {{ item.resolution_note }}</p>{% endif %}</article>{% else %}<p>No review comment recorded.</p>{% endfor %}</div>
+  </section>
+
+  <section class="sdd-review-card"><h2>Approval history</h2><div class="sdd-history">{% for item in sdd_review.workflow.approval_history|reverse %}<p><strong>{{ item.event|replace('_',' ')|title }}</strong> · {{ item.actor or 'System' }} · {{ item.date }} · v{{ item.version }}{% if item.comment %}<br/>{{ item.comment }}{% endif %}</p>{% else %}<p>No workflow event recorded.</p>{% endfor %}</div></section>
+
+  <footer class="sdd-wizard__actions">
+    <a class="sdd-button sdd-button--secondary" href="{{ url_for('step4_sdd_configure_section', section='review-generate') }}">Return to SDD Configuration</a>
+    <form method="post" action="{{ url_for('step4_sdd') }}"><button class="sdd-button sdd-button--secondary" name="action" value="generate_sdd" {% if not sdd_readiness.ready %}disabled{% endif %}>Download Draft DOCX</button></form>
+    {% if sdd_review.status in ['draft','changes_requested'] %}<form method="post"><input type="hidden" name="action" value="submit_review"/><label class="sdd-actor">Submitted by<input name="actor" required/></label><button class="sdd-button" {% if not sdd_review.can_submit %}disabled{% endif %}>{{ 'Resubmit for Review' if sdd_review.status == 'changes_requested' else 'Submit for Technical Review' }}</button></form>{% endif %}
+    {% if sdd_review.status == 'in_review' %}<form method="post"><input type="hidden" name="action" value="request_changes"/><input name="actor" placeholder="Requested by" required/><input name="workflow_comment" placeholder="Reason" required/><button class="sdd-button sdd-button--secondary">Request Changes</button></form>{% endif %}
+    {% if sdd_review.status == 'approved' %}<form method="post"><input type="hidden" name="action" value="finalize"/><label class="sdd-actor">Finalized by<input name="actor" required/></label><button class="sdd-button" {% if not sdd_review.can_finalize %}disabled{% endif %}>Finalize SDD</button></form>{% endif %}
+    {% if sdd_review.status in ['finalized','delivered','superseded'] %}<a class="sdd-button" href="{{ url_for('step4_sdd_final_download', file_format='docx') }}">Download Final DOCX</a><a class="sdd-button" href="{{ url_for('step4_sdd_final_download', file_format='pdf') }}">Download Final PDF</a><a class="sdd-button" href="{{ url_for('step4_sdd_delivery') }}">Customer Delivery</a>{% endif %}
+  </footer>
+</section>
+{% endblock %}

@@ -1,0 +1,110 @@
+{
+  "schema_version": "1.0",
+  "document": {
+    "customer_name": "Blue Meadow Analytics (Fictional)",
+    "customer_legal_name": "Blue Meadow Analytics Test Corporation",
+    "project_name": "Fictional Multi-Cluster OCVS Design",
+    "assessment_name": "Blue Meadow Lab Assessment",
+    "assessment_date": "2026-09-14",
+    "rvtools_file_name": "blue_meadow_fictional_rvtools.xlsx",
+    "generation_date": "2026-09-16",
+    "document_version": "0.1",
+    "version_comment": "Fictional multi-cluster draft",
+    "document_author": "Taylor Example-Fiction",
+    "document_author_email": "taylor@fictional.invalid",
+    "confidentiality_classification": "Oracle Restricted — Employees Only",
+    "draft_status": true,
+    "copyright_year": 2026
+  },
+  "business": {
+    "customer_business_context": "Blue Meadow Analytics is a fictional company used to validate the multi-cluster generation path.",
+    "business_drivers": "Separate management and workload domains while retaining consolidated governance.",
+    "solution_scope_summary": "Map three selected fictional source clusters to one unified management cluster and two workload clusters.",
+    "business_requirements": "Provide cluster-level ownership and transparent commercial totals.",
+    "technical_requirements": "Size each target cluster independently and enforce the documented minimum host counts.",
+    "compliance_requirements": "Fictional internal-control requirements only.",
+    "success_criteria": "Every source cluster is assigned once and all generated target-cluster rows reconcile to the selected scope."
+  },
+  "scope": {
+    "selected_vm_count": 240,
+    "powered_on_vm_count": 225,
+    "powered_off_vm_count": 15,
+    "selected_vcpu": 960,
+    "selected_ram_gb": 6144,
+    "selected_storage_tb": 96.5,
+    "operating_system_summary": "Mixed Windows and Linux fictional workloads",
+    "source_vcenters": ["fictional-vcenter-east", "fictional-vcenter-west"],
+    "source_datacenters": ["Fictional East DC", "Fictional West DC"],
+    "source_clusters": [
+      {"name": "Fictional Management Sources", "vm_count": 40, "powered_on": 38, "powered_off": 2, "vcpu": 160, "ram_gb": 1024, "storage_tb": 12.5},
+      {"name": "Fictional Application Sources", "vm_count": 120, "powered_on": 112, "powered_off": 8, "vcpu": 480, "ram_gb": 3072, "storage_tb": 48.0},
+      {"name": "Fictional Data Sources", "vm_count": 80, "powered_on": 75, "powered_off": 5, "vcpu": 320, "ram_gb": 2048, "storage_tb": 36.0}
+    ]
+  },
+  "sizing": {
+    "business_scenario": "ocvs",
+    "topology": "multi",
+    "sddc_count": 1,
+    "target_cluster_count": 3,
+    "selected_profile": "Per-cluster selected profiles",
+    "selected_shape": "Mixed OCVS shapes",
+    "sizing_driver": "Per-cluster CPU, memory, and storage constraints",
+    "workload_nodes": 8,
+    "spare_nodes": 1,
+    "total_nodes": 9,
+    "workload_capacity_storage_tb": 120.7,
+    "storage_architecture": "OCI Block Volume (Block Storage)",
+    "vcpu_per_ocpu": 4,
+    "cpu_headroom_pct": 20,
+    "ram_headroom_pct": 20,
+    "storage_headroom_pct": 25,
+    "dense_vsan_usable_pct": 50,
+    "standard_storage_vpu": 10,
+    "commitment_term": "1-year",
+    "summary_narrative": "The fictional design uses one unified management cluster and two independently sized workload clusters."
+  },
+  "target_clusters": [
+    {"name": "Unified Management", "role": "unified_management", "assigned_source_clusters": ["Fictional Management Sources"], "assigned_vm_count": 40, "selected_profile": "Cost optimized", "selected_shape": "BM.Standard.E4.128", "sizing_driver": "Minimum topology", "workload_nodes": 3, "spare_nodes": 0, "total_nodes": 3, "storage_requirement_tb": 15.7, "storage_architecture": "OCI Block Volume (Block Storage)", "monthly_cost": 18000},
+    {"name": "Applications", "role": "workload", "assigned_source_clusters": ["Fictional Application Sources"], "assigned_vm_count": 120, "selected_profile": "Cost optimized", "selected_shape": "BM.Optimized3.36", "sizing_driver": "Memory", "workload_nodes": 2, "spare_nodes": 1, "total_nodes": 3, "storage_requirement_tb": 60.0, "storage_architecture": "OCI Block Volume (Block Storage)", "monthly_cost": 24000},
+    {"name": "Data Services", "role": "workload", "assigned_source_clusters": ["Fictional Data Sources"], "assigned_vm_count": 80, "selected_profile": "Standard storage", "selected_shape": "BM.Standard2.52", "sizing_driver": "Storage", "workload_nodes": 3, "spare_nodes": 0, "total_nodes": 3, "storage_requirement_tb": 45.0, "storage_architecture": "OCI Block Volume (Block Storage)", "monthly_cost": 30000}
+  ],
+  "network": {
+    "oci_region": "Fictional Region 2", "tenancy_name_or_ocid": "fictional-multi-tenancy", "compartment_name_or_ocid": "fictional-multi-ocvs", "vcn_name": "fictional-multi-vcn",
+    "vcn_cidr": "198.51.100.0/24", "sddc_cidr": "203.0.113.0/25", "workload_cidrs": ["203.0.113.128/26"], "management_cidrs": ["198.51.100.0/27"],
+    "vmotion_cidrs": ["198.51.100.32/27"], "replication_cidrs": ["198.51.100.64/27"], "hcx_cidrs": ["198.51.100.96/27"], "dns": ["192.0.2.53"], "ntp": ["192.0.2.123"],
+    "connectivity": ["fastconnect"], "fastconnect": {"enabled": true, "bandwidth": "Fictional 10 Gbps design input"}, "ipsec_vpn": {"enabled": false}, "drg": "fictional-multi-drg",
+    "hcx": {"enabled": true, "edition": "Advanced"},
+    "segments": [{"name": "Fictional Management", "cidr": "198.51.100.0/27", "purpose": "Management services"}, {"name": "Fictional Workloads", "cidr": "203.0.113.128/26", "purpose": "Application workloads"}]
+  },
+  "security": {"include_section": true, "iam_model": "Federated fictional identity domains", "encryption": "OCI-managed encryption keys", "logging": "OCI Logging with fictional SIEM integration", "monitoring": "OCI Monitoring and VMware operational dashboards", "requirements": "Apply the fictional approved baseline and validate privileged access."},
+  "operations": {
+    "implementation_provider": "partner", "operating_model": "Partner-assisted transition to customer operations", "monitoring": "Joint monitoring during transition",
+    "backup": {"enabled": true, "description": "Customer-selected backup product with validated retention"}, "disaster_recovery": {"enabled": true, "description": "Fictional secondary recovery design with RPO and RTO under specialist review"},
+    "ha": {"enabled": true, "description": "Cluster-level availability with workload separation"}, "migration_method": "HCX-assisted migration", "migration_window": "Fictional phased weekend windows",
+    "downtime_tolerance": "Application-specific fictional tolerance", "validation_and_rollback": "Validate each wave and return affected workloads to the source platform when exit criteria fail.",
+    "transition_plan": "Partner hands operations to the customer after milestone acceptance."
+  },
+  "commercial": {
+    "currency_code": "EUR", "pricing_available": true, "iaas_discount_pct": 7.5, "commitment_term": "1-year", "monthly_cost": 72000, "annual_cost": 864000,
+    "bom_rows": [
+      {"part_number": "Not available", "product_name": "Unified Management fictional OCVS capacity", "metric": "Host", "quantity": "3", "commitment_term": "1-year", "storage_component": "OCI Block Volume", "pricing_availability": "Fictional QA price only"},
+      {"part_number": "Not available", "product_name": "Applications fictional OCVS capacity", "metric": "Host", "quantity": "3", "commitment_term": "1-year", "storage_component": "OCI Block Volume", "pricing_availability": "Fictional QA price only"},
+      {"part_number": "Not available", "product_name": "Data Services fictional OCVS capacity", "metric": "Host", "quantity": "3", "commitment_term": "1-year", "storage_component": "OCI Block Volume", "pricing_availability": "Fictional QA price only"}
+    ]
+  },
+  "delivery": {
+    "document_history": [{"version": "0.1", "author": "Taylor Example-Fiction", "date": "September 16, 2026", "comment": "Fictional multi-cluster draft"}],
+    "reviewers": [{"name": "Morgan Fiction", "email": "morgan@fictional.invalid", "role": "OCVS reviewer", "company": "Fictional Delivery Partner Ltd."}],
+    "approvers": [{"name": "Jordan Fiction", "email": "jordan@fictional.invalid", "role": "Draft approver", "company": "Blue Meadow Analytics Test Corporation"}],
+    "project_team": [{"name": "Casey Fiction", "email": "casey@fictional.invalid", "role": "Migration lead", "company": "Fictional Delivery Partner Ltd."}],
+    "environments": [{"name": "Fictional Multi-Cluster Scope", "scope": "Selected assessment workload", "location": "Two fictional datacenters", "assessment_coverage": "240 selected VMs"}],
+    "assumptions": [{"statement": "The cluster assignments are fictional and used only for automated validation.", "owner": "OCVS reviewer", "status": "Review required"}],
+    "risks": [{"id": "FIC-01", "description": "Fictional migration bandwidth may not support the planned wave duration.", "impact": "Wave delay", "mitigation": "Validate throughput during detailed design.", "owner": "Migration lead"}],
+    "raci": [{"activity": "Approve target cluster assignments", "responsible": "OCVS reviewer", "accountable": "Customer project lead", "consulted": "Migration lead", "informed": "Operations team"}],
+    "customer_obligations": [{"statement": "Approve fictional network inputs before detailed design.", "owner": "Customer project lead", "due_date": "Before detailed design"}],
+    "implementation_scope": [{"activity": "Configure fictional OCVS SDDC", "deliverable": "Validated three-cluster topology", "owner": "Delivery partner"}],
+    "transition_milestones": [{"milestone": "Operational handover", "owner": "Operations lead", "date": "After validation", "acceptance": "Signed fictional handover checklist"}]
+  },
+  "section_flags": {"include_pricing": true, "include_raci": true, "include_risks": true, "include_transition": true, "include_oracle_lift": false},
+  "specialist_review_warnings": ["All prices are explicitly fictional QA values.", "HCX, network, backup, and DR designs require specialist validation."]
+}

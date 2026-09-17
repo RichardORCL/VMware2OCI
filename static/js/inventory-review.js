@@ -14,6 +14,9 @@
   const visibleCount = document.querySelector("[data-visible-count]");
   const selectionStatus = document.querySelector("[data-selection-status]");
   const refreshSelectedScope = document.querySelector("[data-refresh-selected-scope]");
+  const sizingScopeModes = Array.from(document.querySelectorAll("[data-sizing-scope-mode]"));
+  const sourceClusterPicker = document.querySelector("[data-source-cluster-picker]");
+  const sourceClusterControls = Array.from(document.querySelectorAll("[data-source-cluster-select]"));
   const summaryFields = {
     vms: document.querySelector("[data-summary-vms]"),
     vcpus: document.querySelector("[data-summary-vcpus]"),
@@ -114,6 +117,30 @@
     selectionStatus.textContent = `${selectedCount} of ${rowRecords.length} included`;
   }
 
+  function activeSizingScopeMode() {
+    const selected = sizingScopeModes.find((control) => control.checked);
+    return selected ? selected.value : "consolidated";
+  }
+
+  function updateSourceClusterPicker() {
+    if (sourceClusterPicker) sourceClusterPicker.hidden = activeSizingScopeMode() !== "source_cluster";
+  }
+
+  function syncSourceClusterScope() {
+    updateSourceClusterPicker();
+    if (activeSizingScopeMode() !== "source_cluster") return;
+    const selectedClusters = new Set(
+      sourceClusterControls.filter((control) => control.checked).map((control) => control.value)
+    );
+    rowRecords.forEach((record) => {
+      if (!record.inclusion) return;
+      record.inclusion.checked = selectedClusters.has(record.row.dataset.sourceCluster || "Unassigned source cluster");
+      syncInclusion(record);
+    });
+    updateSelectionStatus();
+    refreshSelectedScopeSummary();
+  }
+
   function numberFromDataset(record, key) {
     return Number.parseFloat(record.row.dataset[key] || "0") || 0;
   }
@@ -188,6 +215,8 @@
   if (refreshSelectedScope) {
     refreshSelectedScope.addEventListener("click", refreshSelectedScopeSummary);
   }
+  sizingScopeModes.forEach((control) => control.addEventListener("change", syncSourceClusterScope));
+  sourceClusterControls.forEach((control) => control.addEventListener("change", syncSourceClusterScope));
 
   if (searchInput) {
     searchInput.addEventListener("input", () => {
@@ -360,6 +389,7 @@
   });
 
   updateSelectionStatus();
+  updateSourceClusterPicker();
   const requestedWarningButton = requestedWarning
     ? warningButtons.find((button) => button.dataset.warningFilter === requestedWarning)
     : null;

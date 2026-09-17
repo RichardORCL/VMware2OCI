@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}SDD Customer Delivery{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='css/sdd-wizard.css') }}" /><link rel="stylesheet" href="{{ url_for('static', filename='css/sdd-review.css') }}" /><link rel="stylesheet" href="{{ url_for('static', filename='css/sdd-delivery.css') }}" />{% endblock %}
+{% block stage_content %}
+<section class="sdd-wizard sdd-delivery" aria-labelledby="delivery-title">
+  <header class="sdd-wizard__header">
+    <div><p class="sdd-wizard__eyebrow">Move to OCVS · Document governance</p><h1 id="delivery-title">SDD Customer Delivery</h1><p>{{ config.customer_document.customer_legal_name or 'Customer not provided' }} · {{ config.customer_document.project_name or 'Project not provided' }}</p></div>
+    <div class="sdd-wizard__completion"><strong>{{ sdd_governance.latest_delivered_version or sdd_governance.latest_finalized_version or config.review_workflow.current_revision }}</strong><span>{{ config.review_workflow.status|replace('_',' ')|title }}</span></div>
+  </header>
+
+  {% if sdd_governance.unpublished_changes %}<div class="sdd-wizard__message sdd-wizard__message--error" role="alert"><strong>Unpublished changes</strong><p>The assessment changed after finalization. Existing delivered artifacts remain immutable; start a new revision to publish the changes.</p></div>{% endif %}
+
+  <div class="sdd-review__grid">
+    <article><h3>Working revision</h3><p><strong>{{ sdd_governance.current_working_revision }}</strong></p><p>Based on {{ sdd_governance.based_on_version or 'the current assessment' }}</p></article>
+    <article><h3>Latest finalized</h3><p><strong>{{ sdd_governance.latest_finalized_version or 'None' }}</strong></p><p>Immutable DOCX and PDF</p></article>
+    <article><h3>Latest delivered</h3><p><strong>{{ sdd_governance.latest_delivered_version or 'Not delivered' }}</strong></p><p>Customer delivery record</p></article>
+    <article><h3>Governed versions</h3><p><strong>{{ sdd_governance.versions|length }}</strong></p><p>{{ sdd_governance.audit_events|length }} audit event(s)</p></article>
+  </div>
+
+  {% if sdd_governance.versions %}
+  <section class="sdd-review-card"><h2>Document versions</h2><div class="sdd-version-table" role="region" aria-label="SDD version history"><table><thead><tr><th>Version</th><th>Status</th><th>Finalized</th><th>Delivered</th><th>Owner</th><th>Integrity</th><th>Files</th><th>Governance</th></tr></thead><tbody>
+    {% for item in sdd_governance.versions %}<tr>
+      <td><strong>v{{ item.version }}</strong>{% if item.replaces_version %}<small>Replaces v{{ item.replaces_version }}</small>{% endif %}{% if item.superseded_by %}<small>Superseded by v{{ item.superseded_by }}</small>{% endif %}</td>
+      <td><span class="sdd-status sdd-status--{{ item.status }}">{{ item.status|title }}</span></td>
+      <td>{{ item.finalized_at or '—' }}<small>{{ item.finalized_by }}</small></td>
+      <td>{{ item.delivered_at or '—' }}<small>{{ item.delivered_by }}</small></td>
+      <td>{{ item.approved_by or item.created_by or '—' }}</td>
+      <td><strong>{{ item.integrity }}</strong></td>
+      <td><div class="sdd-file-actions"><a href="{{ url_for('step4_sdd_artifact_download', artifact_id=item.artifact_id, file_format='docx') }}">DOCX</a><a href="{{ url_for('step4_sdd_artifact_download', artifact_id=item.artifact_id, file_format='pdf') }}">PDF</a><a href="{{ url_for('step4_sdd_delivery_package', artifact_id=item.artifact_id) }}">ZIP package</a>{% if item.status == 'delivered' %}<a href="{{ url_for('step4_sdd_acceptance') }}">Acceptance &amp; Handover</a>{% endif %}</div></td>
+      <td>{% if item.status == 'delivered' and item.version != sdd_governance.latest_delivered_version %}<form method="post"><input type="hidden" name="action" value="supersede"/><input type="hidden" name="version" value="{{ item.version }}"/><input name="actor" placeholder="Changed by" required/><button class="sdd-button sdd-button--small">Mark superseded</button></form>{% else %}—{% endif %}</td>
+    </tr>{% endfor %}
+  </tbody></table></div></section>
+  {% else %}<section class="sdd-review-card"><h2>No immutable artifact yet</h2><p>Complete technical review, approval and finalization before customer delivery.</p></section>{% endif %}
+
+  {% set latest = sdd_governance.versions|selectattr('version','equalto',sdd_governance.latest_finalized_version)|list|first %}
+  {% if latest and latest.status == 'finalized' %}<section class="sdd-review-card"><h2>Confirm customer delivery</h2><p>This event is appended to the immutable audit history. The finalized files will not be modified.</p><form class="sdd-delivery-form" method="post" data-confirm-delivery><input type="hidden" name="action" value="mark_delivered"/><input type="hidden" name="artifact_id" value="{{ latest.artifact_id }}"/><label>Delivered by<input name="actor" required/></label><label>Delivery date<input type="date" name="delivery_date" required/></label><label>Recipient name<input name="recipient_name"/></label><label>Recipient company<input name="recipient_company"/></label><label>Recipient e-mail<input type="email" name="recipient_email"/></label><label class="sdd-field--wide">Delivery comment<textarea name="delivery_comment" rows="3"></textarea></label><button class="sdd-button">Mark v{{ latest.version }} as delivered</button></form></section>{% endif %}
+
+  {% if sdd_governance.latest_finalized_version %}<section class="sdd-review-card"><h2>Start a new revision</h2><p>The previous finalized or delivered version and its artifacts remain unchanged.</p><form class="sdd-inline-form" method="post"><input type="hidden" name="action" value="start_revision"/><input name="actor" placeholder="Started by" required/><input name="revision_reason" placeholder="Required revision reason" required/><button class="sdd-button">Start new revision</button></form></section>{% endif %}
+
+  <section class="sdd-review-card"><h2>Audit history</h2><div class="sdd-history">{% for event in sdd_governance.audit_events|reverse %}<p><strong>{{ event.event|replace('_',' ')|title }}</strong> · v{{ event.version }} · {{ event.actor or 'System' }} · {{ event.timestamp }}{% if event.details %}<br/>{{ event.details }}{% endif %}</p>{% else %}<p>No governance event recorded.</p>{% endfor %}</div></section>
+
+  <footer class="sdd-wizard__actions"><a class="sdd-button" href="{{ url_for('step4_sdd_acceptance') }}">Customer Acceptance &amp; Handover</a><a class="sdd-button sdd-button--secondary" href="{{ url_for('step4_sdd_review') }}">Technical Review</a><a class="sdd-button sdd-button--secondary" href="{{ url_for('step4', tab='price') }}">Results &amp; Export</a></footer>
+</section>
+<script>
+  document.querySelector('[data-confirm-delivery]')?.addEventListener('submit', function (event) {
+    if (!window.confirm('Confirm that this finalized SDD version was delivered to the customer? This governance event cannot be removed.')) event.preventDefault();
+  });
+</script>
+{% endblock %}

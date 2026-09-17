@@ -25,6 +25,13 @@ def valid_sections() -> tuple[dict, dict, dict]:
             "selected_vm_names": ["app-01", "db-01"],
             "step4_hybrid_placements": {"app-01": "native", "db-01": "ocvs"},
             "step4_iaas_discount_pct": 12.5,
+            "sdd_configuration": {
+                "schema_version": "1.0",
+                "status": "draft",
+                "source_snapshot_hash": "abc123",
+                "customer_document": {"project_name": "Alpha OCVS SDD"},
+                "business": {"customer_business_context": "Private cloud migration."},
+            },
         },
         "step4_snapshot": {
             "saved_at": "2026-07-04T09:30:00",
@@ -101,6 +108,34 @@ def valid_package() -> dict:
         exported_at="2026-07-04T10:15:00Z",
         source={"assessment_id": "alpha_local_id", "application_schema_version": 1},
     )
+
+
+class OCVSSDDPortableConfigurationTests(unittest.TestCase):
+    def test_portable_package_preserves_draft_sdd_configuration(self):
+        package = valid_package()
+        config = package["assessment"]["app_state"]["sdd_configuration"]
+        self.assertEqual(config["status"], "draft")
+        self.assertEqual(config["source_snapshot_hash"], "abc123")
+        self.assertEqual(config["customer_document"]["project_name"], "Alpha OCVS SDD")
+
+    def test_portable_package_removes_local_sdd_ids_and_paths(self):
+        assessment, inventory, pricing = valid_sections()
+        assessment["app_state"]["sdd_configuration"]["source_assessment_id"] = "local-only-id"
+        assessment["app_state"]["sdd_source_snapshot"] = {
+            "assessment_id": "local-only-id",
+            "document": {"rvtools_file_name": "/private/customer/inventory.xlsx"},
+        }
+        package = portability.build_portable_package(
+            assessment,
+            inventory,
+            pricing,
+            exported_at="2026-07-04T10:15:00Z",
+            source={"assessment_id": "alpha_local_id", "application_schema_version": 1},
+        )
+        state = package["assessment"]["app_state"]
+        self.assertEqual(state["sdd_configuration"]["source_assessment_id"], "")
+        self.assertEqual(state["sdd_source_snapshot"]["assessment_id"], "")
+        self.assertEqual(state["sdd_source_snapshot"]["document"]["rvtools_file_name"], "inventory.xlsx")
 
 
 def price_document() -> dict:
@@ -944,6 +979,7 @@ class PortableAssessmentTests(unittest.TestCase):
                 "step4_ocvs_policy",
                 "assessor_recommendation",
                 "assessor_recommendation_rationale",
+                "sdd_configuration",
             },
             set(validated["assessment"]["app_state"]),
         )
@@ -996,7 +1032,7 @@ class PortableAssessmentTests(unittest.TestCase):
             "inventory_path",
             "generated_export_path",
             "local_id",
-            "assessment_id",
+            "sender-local-id",
             "arbitrary_nested",
             "/private/",
         ):

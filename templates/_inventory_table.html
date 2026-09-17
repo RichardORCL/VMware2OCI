@@ -19,6 +19,9 @@
           <th class="inventory-col-os" scope="col" aria-sort="none">
             <button type="button" class="inventory-sort" data-sort="os">OS</button>
           </th>
+          <th class="inventory-col-cluster" scope="col" aria-sort="none">
+            <button type="button" class="inventory-sort" data-sort="cluster">Source cluster</button>
+          </th>
           {% if not scenario_ui.ocvs_only %}<th class="inventory-col-support" scope="col" aria-sort="none">
             <button type="button" class="inventory-sort" data-sort="support">Native support</button>
           </th>{% endif %}
@@ -45,6 +48,7 @@
           <tr
             data-inventory-row="{{ vm.row_index }}"
             data-search="{{ vm.name }} {{ vm.raw_os }}"
+            data-source-cluster="{{ vm.source_cluster }}"
             data-support="{{ vm.support_state }}"
             data-power="{{ vm.power_key }}"
             data-placement="{{ vm.placement }}"
@@ -52,6 +56,7 @@
             data-sort-name="{{ vm.name }}"
             data-sort-power="{{ vm.power_state }}"
             data-sort-os="{{ vm.raw_os }}"
+            data-sort-cluster="{{ vm.source_cluster }}"
             data-sort-support="{{ vm.support_label }}"
             data-sort-cpu="{{ vm.cpus }}"
             data-sort-memory="{{ vm.memory_mb }}"
@@ -78,6 +83,7 @@
             </th>
             <td class="inventory-col-power">{{ vm.power_state }}</td>
             <td class="inventory-col-os">{{ vm.raw_os }}</td>
+            <td class="inventory-col-cluster">{{ vm.source_cluster }}</td>
             {% if not scenario_ui.ocvs_only %}<td class="inventory-col-support">
               <span class="inventory-status inventory-status--{{ vm.support_state }}">{{ vm.support_label }}</span>
             </td>{% endif %}
@@ -110,13 +116,14 @@
             </td>
           </tr>
           <tr class="inventory-details-row" data-inventory-detail="{{ vm.row_index }}" hidden>
-            <td colspan="{{ 10 if scenario_ui.ocvs_only else 11 }}">
+            <td colspan="{{ 11 if scenario_ui.ocvs_only else 12 }}">
               <details class="inventory-row-details" id="inventory-details-{{ vm.row_index }}">
                 <summary>Details for {{ vm.name }}</summary>
                 <div class="inventory-row-details__content">
                   <dl>
                     <div><dt>Power</dt><dd>{{ vm.power_state }}</dd></div>
                     <div><dt>Operating system</dt><dd>{{ vm.raw_os }}</dd></div>
+                    <div><dt>Source cluster</dt><dd>{{ vm.source_cluster }}</dd></div>
                     {% if not scenario_ui.ocvs_only %}<div><dt>Native support</dt><dd>{{ vm.support_label }}</dd></div>{% endif %}
                     <div><dt>vCPU</dt><dd>{{ vm.cpus }}</dd></div>
                     <div><dt>RAM</dt><dd>{{ "%.1f"|format(vm.memory_gb) }} GB</dd></div>
@@ -166,7 +173,7 @@
             </td>
           </tr>
         {% else %}
-          <tr><td colspan="{{ 10 if scenario_ui.ocvs_only else 11 }}">No VMs are available in the current inventory.</td></tr>
+          <tr><td colspan="{{ 11 if scenario_ui.ocvs_only else 12 }}">No VMs are available in the current inventory.</td></tr>
         {% endfor %}
       </tbody>
     </table>
