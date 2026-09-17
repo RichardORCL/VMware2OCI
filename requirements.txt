@@ -1,2 +1,4 @@
 Flask
 certifi
+lxml
+python-docx

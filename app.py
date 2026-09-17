@@ -12,12 +12,13 @@ import shutil
 import subprocess
 import sys
 import threading
+import tempfile
 import zipfile
 import ssl
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 from xml.sax.saxutils import escape as xml_escape, unescape as xml_unescape
 from urllib.error import HTTPError, URLError
@@ -36,6 +37,55 @@ from assessment_portability import (
     build_portable_package,
     dumps_portable_package,
     validate_portable_package,
+)
+from services.ocvs_sdd_adapter import (
+    WIZARD_LABELS,
+    WIZARD_SECTIONS,
+    build_sdd_payload,
+    normalize_sdd_configuration,
+    readiness as build_ocvs_sdd_readiness,
+    snapshot_hash as ocvs_sdd_snapshot_hash,
+    validate_section as validate_ocvs_sdd_section,
+)
+from services.ocvs_sdd_review import (
+    add_comment as add_ocvs_sdd_review_comment,
+    approve as approve_ocvs_sdd,
+    complete_review as complete_ocvs_sdd_review,
+    finalize as finalize_ocvs_sdd,
+    invalidate_if_stale as invalidate_ocvs_sdd_review_if_stale,
+    normalize_review_workflow,
+    request_changes as request_ocvs_sdd_changes,
+    resolve_comment as resolve_ocvs_sdd_review_comment,
+    submit as submit_ocvs_sdd_review,
+    summary as build_ocvs_sdd_review_summary,
+)
+from services.ocvs_sdd_delivery import (
+    artifact_integrity as ocvs_sdd_artifact_integrity,
+    build_delivery_package as build_ocvs_sdd_delivery_package,
+    find_version as find_ocvs_sdd_version,
+    governance_summary as build_ocvs_sdd_governance_summary,
+    mark_delivered as mark_ocvs_sdd_delivered,
+    normalize_delivery_governance,
+    read_artifact as read_ocvs_sdd_artifact,
+    record_audit as record_ocvs_sdd_audit,
+    start_new_revision as start_ocvs_sdd_revision,
+    store_final_artifacts as store_ocvs_sdd_final_artifacts,
+    supersede_version as supersede_ocvs_sdd_version,
+)
+from services.ocvs_sdd_handover import (
+    build_handover_package as build_ocvs_sdd_handover_package,
+    build_migration_planning_payload as build_ocvs_migration_planning_payload,
+    confirm_handover as confirm_ocvs_sdd_handover,
+    create_action as create_ocvs_sdd_handover_action,
+    find_acceptance as find_ocvs_sdd_acceptance,
+    invalidate_for_new_revision as invalidate_ocvs_sdd_acceptance_for_revision,
+    normalize_acceptance_handover,
+    record_acceptance_decision as record_ocvs_sdd_acceptance_decision,
+    set_readiness_owners as set_ocvs_sdd_readiness_owners,
+    start_acceptance as start_ocvs_sdd_acceptance,
+    summary as build_ocvs_sdd_handover_summary,
+    update_action as update_ocvs_sdd_handover_action,
+    update_checklist_item as update_ocvs_sdd_checklist_item,
 )
 
 
@@ -171,6 +221,9 @@ DOWNLOADS_DIR = Path("downloads")
 RVTOOLS_DIR = Path("rvtools")
 EXPORTS_DIR = DOWNLOADS_DIR / "exports"
 PRESENTATION_EXPORTS_DIR = EXPORTS_DIR / "presentations"
+SDD_EXPORTS_DIR = EXPORTS_DIR / "sdd"
+OCVS_SDD_TEMPLATE_PATH = Path("document_templates/OCVS_SDD_template_automatable.docx")
+OCVS_SDD_SCHEMA_PATH = Path("schemas/ocvs_sdd_generation.schema.json")
 PRESENTATION_TEMPLATE_NAMES = {
     "compute": "OCI Compute Migration.pptx",
     "ocvs": "Oracle Cloud VMware Solution.pptx",
@@ -226,6 +279,11 @@ OCVS_TERM_DISCOUNTS_PATH = Path("config/ocvs_term_discounts.json")
 APP_STATE_DIR = Path("downloads/app_state")
 SAVED_ASSESSMENT_SCHEMA_VERSION = 1
 IMPORTED_INVENTORY_FORMAT = "vmware_to_oci_normalized_inventory"
+
+
+def _ocvs_sdd_artifact_root() -> Path:
+    """Return the private, host-local SDD artifact store."""
+    return APP_STATE_DIR / "sdd_artifacts"
 IMPORTED_INVENTORY_SCHEMA_VERSION = 1
 PRICE_LIST_DOWNLOAD_TIMEOUT_SECONDS = 60
 MAX_VISIBLE_PRICE_LISTS = 10
@@ -234,7 +292,13 @@ NATIVE_PAGE_SIZE_OPTIONS = (25, 50, 100)
 NATIVE_SUPPORT_FILTERS = {"all", "supported", "remediation", "review"}
 NATIVE_SEARCH_MAX_LENGTH = 200
 STEP4_UNSAVED_READINESS_SESSION_KEY = "_step4_unsaved_scenario_changes"
-STEP4_ALLOWED_ACTIONS = {"save", "export_excel", "generate_presentation"}
+STEP4_ALLOWED_ACTIONS = {
+    "save",
+    "export_excel",
+    "generate_presentation",
+    "export_migration_json",
+    "export_migration_csv",
+}
 STEP4_ACTIVE_SCENARIOS = {"native", "ocvs", "hybrid", "price"}
 RESULT_RECOMMENDATION_VALUES = {"", "native", "ocvs", "hybrid"}
 RESULT_RECOMMENDATION_FIELDS = {
@@ -551,6 +615,8 @@ def build_export_filename(
 def _default_app_state() -> dict[str, Any]:
     return {
         "selected_vm_names": [],
+        "sizing_scope_mode": "consolidated",
+        "selected_source_clusters": [],
         "acknowledged_warning_ids": [],
         "assessor_recommendation": "",
         "assessor_recommendation_rationale": "",
@@ -567,13 +633,20 @@ def _default_app_state() -> dict[str, Any]:
         "step4_ocvs_commitment_term": "payg",
         "step4_vmware_license_price_per_core_yearly": 0.0,
         "step4_ocvs_dr_nodes": 0,
+        "step4_ocvs_topology": "single",
+        "step4_ocvs_target_clusters": [],
         "step4_hybrid_ocvs_customized": False,
         "step4_hybrid_ocvs_profile": "best_fit",
         "step4_hybrid_ocvs_policy": dict(OCVS_DEFAULT_SIZING_POLICY),
         "step4_hybrid_ocvs_commitment_term": "payg",
         "step4_hybrid_vmware_license_price_per_core_yearly": 0.0,
         "step4_hybrid_ocvs_dr_nodes": 0,
+        "step4_hybrid_ocvs_topology": "single",
+        "step4_hybrid_ocvs_target_clusters": [],
+        "migration_plan_records": [],
         "step4_last_updated_at": "",
+        "sdd_configuration": {},
+        "sdd_source_snapshot": {},
     }
 
 
@@ -932,6 +1005,13 @@ def normalize_app_state(value: Any) -> dict[str, Any]:
     default.update(loaded)
     if not isinstance(default.get("selected_vm_names"), list):
         default["selected_vm_names"] = []
+    default["sizing_scope_mode"] = normalize_sizing_scope_mode(default.get("sizing_scope_mode"))
+    selected_source_clusters = default.get("selected_source_clusters")
+    default["selected_source_clusters"] = (
+        list(dict.fromkeys(str(item).strip()[:160] for item in selected_source_clusters if str(item).strip()))
+        if isinstance(selected_source_clusters, list)
+        else []
+    )
     warning_ids = default.get("acknowledged_warning_ids")
     normalized_warning_ids: list[str] = []
     seen_warning_ids: set[str] = set()
@@ -994,6 +1074,10 @@ def normalize_app_state(value: Any) -> dict[str, Any]:
         1_000_000.0,
     )
     default["step4_ocvs_dr_nodes"] = normalize_ocvs_dr_nodes(default.get("step4_ocvs_dr_nodes", 0))
+    default["step4_ocvs_topology"] = normalize_ocvs_topology(default.get("step4_ocvs_topology"))
+    default["step4_ocvs_target_clusters"] = normalize_ocvs_target_clusters(
+        default.get("step4_ocvs_target_clusters")
+    )
     default["step4_hybrid_ocvs_customized"] = (
         default.get("step4_hybrid_ocvs_customized") is True
     )
@@ -1021,6 +1105,19 @@ def normalize_app_state(value: Any) -> dict[str, Any]:
     default["step4_hybrid_ocvs_dr_nodes"] = normalize_ocvs_dr_nodes(
         default.get("step4_hybrid_ocvs_dr_nodes", default.get("step4_ocvs_dr_nodes", 0))
     )
+    default["step4_hybrid_ocvs_topology"] = normalize_ocvs_topology(
+        default.get("step4_hybrid_ocvs_topology")
+    )
+    default["step4_hybrid_ocvs_target_clusters"] = normalize_ocvs_target_clusters(
+        default.get("step4_hybrid_ocvs_target_clusters")
+    )
+    if not isinstance(default.get("migration_plan_records"), list):
+        default["migration_plan_records"] = []
+    default["sdd_configuration"] = normalize_sdd_configuration(
+        default.get("sdd_configuration")
+    )
+    if not isinstance(default.get("sdd_source_snapshot"), dict):
+        default["sdd_source_snapshot"] = {}
     default.pop("step4_vmware_license_discount_pct", None)
     return default
 
@@ -2103,6 +2200,9 @@ def build_vm_cost_row(
 
     return {
         "vm_name": vm_name,
+        "source_cluster": str(vm.get("source_cluster") or "Unassigned source cluster"),
+        "source_datacenter": str(vm.get("source_datacenter") or ""),
+        "source_vcenter": str(vm.get("source_vcenter") or ""),
         "os_name": raw_os_value or "Unknown / Empty",
         "power_state": str(vm.get("power_state") or "").strip(),
         "is_windows_server": is_windows_server,
@@ -2420,6 +2520,32 @@ STORAGE_GB_HEADERS = (
     "Disk (GB)",
     "Disk GB",
 )
+SOURCE_CLUSTER_HEADERS = (
+    "Cluster",
+    "Cluster Name",
+    "VMware Cluster",
+    "Source Cluster",
+    "vCluster",
+)
+RESOURCE_POOL_HEADERS = (
+    "Resource pool",
+    "Resource Pool",
+    "ResourcePool",
+    "Resource Pool Path",
+)
+DATACENTER_HEADERS = (
+    "Datacenter",
+    "Data Center",
+    "Datacenter Name",
+    "Source Datacenter",
+)
+VCENTER_HEADERS = (
+    "VI SDK Server",
+    "vCenter",
+    "vCenter Server",
+    "VC Host",
+    "Source vCenter",
+)
 
 
 def _normalize_header_name(value: Any) -> str:
@@ -2439,6 +2565,29 @@ MEMORY_MIB_HEADER_SET = _normalized_header_set(MEMORY_MIB_HEADERS)
 MEMORY_GB_HEADER_SET = _normalized_header_set(MEMORY_GB_HEADERS)
 STORAGE_MIB_HEADER_SET = _normalized_header_set(STORAGE_MIB_HEADERS)
 STORAGE_GB_HEADER_SET = _normalized_header_set(STORAGE_GB_HEADERS)
+SOURCE_CLUSTER_HEADER_SET = _normalized_header_set(SOURCE_CLUSTER_HEADERS)
+RESOURCE_POOL_HEADER_SET = _normalized_header_set(RESOURCE_POOL_HEADERS)
+DATACENTER_HEADER_SET = _normalized_header_set(DATACENTER_HEADERS)
+VCENTER_HEADER_SET = _normalized_header_set(VCENTER_HEADERS)
+
+
+def resolve_source_cluster(record: dict[str, Any]) -> str:
+    """Resolve a VM's source cluster without dropping records that lack metadata."""
+    direct = _record_first_value_from_set(record, SOURCE_CLUSTER_HEADER_SET).strip()
+    if direct:
+        return direct
+
+    resource_pool = _record_first_value_from_set(record, RESOURCE_POOL_HEADER_SET).strip()
+    if resource_pool:
+        parts = [part.strip() for part in re.split(r"[/\\\\]+", resource_pool) if part.strip()]
+        for index, part in enumerate(parts):
+            if part.lower() == "resources" and index > 0:
+                return parts[index - 1]
+        for part in reversed(parts):
+            if "cluster" in part.lower():
+                return part
+
+    return "Unassigned source cluster"
 
 
 def _record_first_value(record: dict[str, Any], *headers: str) -> str:
@@ -3053,6 +3202,10 @@ def load_vms_from_vinfo(selected_path: str) -> tuple[list[dict[str, Any]], str]:
                     "cpus": cpus_raw,
                     "memory_mb": mem_raw,
                     "provisioned_mib": provisioned_mib,
+                    "source_cluster": resolve_source_cluster(rec),
+                    "resource_pool": _record_first_value_from_set(rec, RESOURCE_POOL_HEADER_SET),
+                    "source_datacenter": _record_first_value_from_set(rec, DATACENTER_HEADER_SET),
+                    "source_vcenter": _record_first_value_from_set(rec, VCENTER_HEADER_SET),
                 }
             )
         return parsed_rows
@@ -5123,6 +5276,421 @@ def build_hybrid_placement_plan(
     }
 
 
+def normalize_sizing_scope_mode(value: Any) -> str:
+    return "source_cluster" if str(value or "").strip().lower() == "source_cluster" else "consolidated"
+
+
+def normalize_ocvs_topology(value: Any) -> str:
+    return "multi" if str(value or "").strip().lower() == "multi" else "single"
+
+
+def build_source_cluster_summaries(
+    vm_rows: list[dict[str, Any]],
+    selected_vm_names: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    selected_set = set(selected_vm_names or [])
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in vm_rows:
+        cluster = str(row.get("source_cluster") or "Unassigned source cluster").strip()
+        cluster = cluster or "Unassigned source cluster"
+        item = grouped.setdefault(
+            cluster,
+            {
+                "name": cluster,
+                "vm_count": 0,
+                "selected_vm_count": 0,
+                "vcpus": 0,
+                "memory_gb": 0.0,
+                "storage_gb": 0.0,
+                "vm_names": [],
+            },
+        )
+        vm_name = str(row.get("vm_name") or row.get("name") or "").strip()
+        memory_gb = (
+            float(row.get("memory_gb") or 0.0)
+            if "memory_gb" in row
+            else _to_number(row.get("memory_mb")) / 1024.0
+        )
+        storage_gb = (
+            float(row.get("raw_provisioned_gb", row.get("provisioned_gb", 0.0)) or 0.0)
+            if "raw_provisioned_gb" in row or "provisioned_gb" in row
+            else _to_number(row.get("provisioned_mib")) / 1024.0
+        )
+        item["vm_count"] += 1
+        item["vcpus"] += int(_to_number(row.get("cpus")))
+        item["memory_gb"] += memory_gb
+        item["storage_gb"] += storage_gb
+        if vm_name:
+            item["vm_names"].append(vm_name)
+            if vm_name in selected_set:
+                item["selected_vm_count"] += 1
+
+    summaries = []
+    for item in grouped.values():
+        storage_tb = float(item["storage_gb"]) / 1024.0
+        summaries.append(
+            {
+                **item,
+                "memory_gb": int(math.ceil(float(item["memory_gb"]))),
+                "storage_gb": int(math.ceil(float(item["storage_gb"]))),
+                "storage_tb": round(storage_tb, 1),
+                "fully_selected": bool(item["vm_count"] and item["selected_vm_count"] == item["vm_count"]),
+                "partially_selected": bool(0 < item["selected_vm_count"] < item["vm_count"]),
+            }
+        )
+    return sorted(summaries, key=lambda item: (item["name"] == "Unassigned source cluster", item["name"].lower()))
+
+
+def build_ocvs_sdd_source_snapshot(
+    *,
+    vm_rows: list[dict[str, Any]],
+    analysis: dict[str, Any],
+    customer_name: str,
+    assessment_name: str,
+    assessment_id: str,
+    selected_rvtools_file: str,
+    source_vinfo_csv: str,
+    pricing_currency: str,
+    iaas_discount_pct: float,
+    ocvs_policy: dict[str, Any],
+    ocvs_profile_choice: str,
+    ocvs_commitment_term: str,
+    ocvs_dr_nodes: int,
+    ocvs_topology: str,
+    step4_last_updated_at: str,
+) -> dict[str, Any]:
+    """Freeze the saved OCVS result used by Draft SDD generation."""
+    source_rows: list[dict[str, Any]] = []
+    for summary in build_source_cluster_summaries(vm_rows, [str(row.get("vm_name") or "") for row in vm_rows]):
+        scoped = [row for row in vm_rows if str(row.get("source_cluster") or "Unassigned source cluster") == summary["name"]]
+        powered_on = sum(1 for row in scoped if str(row.get("power_state") or "").strip().lower() in {"on", "powered on", "poweredon", "running"})
+        source_rows.append(
+            {
+                "name": str(summary["name"]),
+                "vm_count": int(summary["vm_count"]),
+                "powered_on": powered_on,
+                "powered_off": int(summary["vm_count"]) - powered_on,
+                "vcpu": int(summary["vcpus"]),
+                "ram_gb": float(summary["memory_gb"]),
+                "storage_tb": round(float(summary["storage_gb"]) / 1024.0, 1),
+            }
+        )
+    selected_vm_count = len(vm_rows)
+    powered_on_count = sum(row["powered_on"] for row in source_rows)
+    selected_storage_gb = sum(float(row.get("raw_provisioned_gb", row.get("provisioned_gb", 0))) for row in vm_rows)
+    os_counts: dict[str, int] = {}
+    for row in vm_rows:
+        os_name = str(row.get("os_name") or "Unknown / Empty")
+        os_counts[os_name] = os_counts.get(os_name, 0) + 1
+    os_summary = ", ".join(f"{name} ({count})" for name, count in sorted(os_counts.items(), key=lambda item: (-item[1], item[0]))[:12]) or "Not provided"
+    ocvs_price = analysis.get("ocvs_price") if isinstance(analysis.get("ocvs_price"), dict) else {}
+    selected = dict(ocvs_price.get("selected") or {})
+    totals = dict(ocvs_price.get("totals") or {})
+    multi = analysis.get("ocvs_multi_cluster") if isinstance(analysis.get("ocvs_multi_cluster"), dict) else None
+    topology = "multi" if ocvs_topology == "multi" and multi and multi.get("is_valid") else "single"
+    storage_factor = max(0.01, 1.0 - (float(ocvs_policy.get("storage_headroom_pct", 0.0)) / 100.0))
+
+    target_clusters: list[dict[str, Any]] = []
+    if topology == "multi":
+        for index, cluster in enumerate(list(multi.get("clusters") or [])):
+            cluster_selected = dict(cluster.get("selected") or {})
+            cluster_totals = dict(cluster.get("totals") or {})
+            raw_storage = float(cluster_totals.get("storage_gb", 0.0) or 0.0)
+            workload_nodes = int(cluster_selected.get("base_host_count", cluster_selected.get("host_count", 0)) or 0)
+            spare_nodes = int(cluster_selected.get("dr_node_count", 0) or 0)
+            total_nodes = int(cluster_selected.get("host_count", workload_nodes + spare_nodes) or 0)
+            target_clusters.append(
+                {
+                    "name": str(cluster.get("name") or f"OCVS Cluster {index + 1}"),
+                    "role": "unified_management" if index == 0 else "workload",
+                    "assigned_source_clusters": list(cluster.get("source_clusters") or []),
+                    "assigned_vm_count": int(cluster.get("vm_count", 0) or 0),
+                    "selected_profile": str(cluster_selected.get("label") or cluster.get("profile") or "Selected profile"),
+                    "selected_shape": str(cluster_selected.get("shape") or "Not provided"),
+                    "sizing_driver": str(cluster_selected.get("constraint") or "Not provided").replace("_", " ").title(),
+                    "workload_nodes": workload_nodes,
+                    "spare_nodes": spare_nodes,
+                    "total_nodes": total_nodes,
+                    "storage_requirement_tb": round(raw_storage / storage_factor / 1024.0, 1),
+                    "storage_architecture": str(cluster.get("storage_architecture") or _presentation_storage_type(cluster_selected.get("shape"))),
+                    "monthly_cost": float(cluster.get("monthly_cost")) if cluster_selected.get("pricing_available") else None,
+                }
+            )
+    else:
+        raw_storage = float(totals.get("storage_gb", selected_storage_gb) or 0.0)
+        workload_nodes = int(selected.get("base_host_count", selected.get("host_count", 0)) or 0)
+        spare_nodes = int(selected.get("dr_node_count", ocvs_dr_nodes) or 0)
+        total_nodes = int(selected.get("host_count", workload_nodes + spare_nodes) or 0)
+        target_clusters = [
+            {
+                "name": "Unified Management",
+                "role": "unified_management",
+                "assigned_source_clusters": [row["name"] for row in source_rows],
+                "assigned_vm_count": selected_vm_count,
+                "selected_profile": str(selected.get("label") or ocvs_profile_choice or "Selected profile"),
+                "selected_shape": str(selected.get("shape") or "Not provided"),
+                "sizing_driver": str(selected.get("constraint") or "Not provided").replace("_", " ").title(),
+                "workload_nodes": workload_nodes,
+                "spare_nodes": spare_nodes,
+                "total_nodes": total_nodes,
+                "storage_requirement_tb": round(raw_storage / storage_factor / 1024.0, 1),
+                "storage_architecture": _presentation_storage_type(selected.get("shape")),
+                "monthly_cost": float(selected.get("selection_monthly_cost", 0.0)) if selected.get("pricing_available") else None,
+            }
+        ]
+
+    shapes = {row["selected_shape"] for row in target_clusters}
+    profiles = {row["selected_profile"] for row in target_clusters}
+    drivers = {row["sizing_driver"] for row in target_clusters}
+    architectures = {row["storage_architecture"] for row in target_clusters}
+    total_monthly = sum(float(row["monthly_cost"] or 0.0) for row in target_clusters)
+    pricing_available = bool(target_clusters) and all(row["monthly_cost"] is not None for row in target_clusters)
+    commitment_label = OCVS_COMMITMENT_LABELS.get(normalize_ocvs_commitment_term(ocvs_commitment_term), "Pay as you go")
+    rvtools_source = str(selected_rvtools_file or source_vinfo_csv).split("::", 1)[0]
+    saved_date = str(step4_last_updated_at or "")[:10]
+    return {
+        "assessment_id": assessment_id,
+        "source_step4_updated_at": step4_last_updated_at,
+        "document": {
+            "customer_name": customer_name or "Not provided",
+            "assessment_name": assessment_name or "OCVS assessment",
+            "assessment_date": saved_date or datetime.now().date().isoformat(),
+            "rvtools_file_name": Path(rvtools_source).name,
+        },
+        "scope": {
+            "selected_vm_count": selected_vm_count,
+            "powered_on_vm_count": powered_on_count,
+            "powered_off_vm_count": selected_vm_count - powered_on_count,
+            "selected_vcpu": sum(int(row.get("cpus", 0) or 0) for row in vm_rows),
+            "selected_ram_gb": sum(float(row.get("memory_gb", 0) or 0) for row in vm_rows),
+            "selected_storage_tb": round(selected_storage_gb / 1024.0, 1),
+            "operating_system_summary": os_summary,
+            "source_vcenters": sorted({str(row.get("source_vcenter")) for row in vm_rows if str(row.get("source_vcenter") or "").strip()}),
+            "source_datacenters": sorted({str(row.get("source_datacenter")) for row in vm_rows if str(row.get("source_datacenter") or "").strip()}),
+            "source_clusters": source_rows,
+        },
+        "selected_vm_names": sorted(str(row.get("vm_name") or "") for row in vm_rows),
+        "sizing": {
+            "business_scenario": "ocvs",
+            "topology": topology,
+            "sddc_count": 1,
+            "target_cluster_count": len(target_clusters),
+            "selected_profile": next(iter(profiles)) if len(profiles) == 1 else "Multiple profiles",
+            "selected_shape": next(iter(shapes)) if len(shapes) == 1 else "Multiple OCVS shapes",
+            "sizing_driver": next(iter(drivers)) if len(drivers) == 1 else "Multiple sizing drivers",
+            "workload_nodes": sum(int(row["workload_nodes"]) for row in target_clusters),
+            "spare_nodes": sum(int(row["spare_nodes"]) for row in target_clusters),
+            "total_nodes": sum(int(row["total_nodes"]) for row in target_clusters),
+            "workload_capacity_storage_tb": round(sum(float(row["storage_requirement_tb"]) for row in target_clusters), 1),
+            "storage_architecture": next(iter(architectures)) if len(architectures) == 1 else "Mixed",
+            "vcpu_per_ocpu": float(ocvs_policy.get("vcpu_per_ocpu", 4.0)),
+            "cpu_headroom_pct": float(ocvs_policy.get("cpu_headroom_pct", 20.0)),
+            "ram_headroom_pct": float(ocvs_policy.get("memory_headroom_pct", 20.0)),
+            "storage_headroom_pct": float(ocvs_policy.get("storage_headroom_pct", 25.0)),
+            "dense_vsan_usable_pct": float(ocvs_policy.get("dense_vsan_usable_pct", 50.0)),
+            "standard_storage_vpu": float(ocvs_policy.get("standard_storage_vpu", 10)),
+            "commitment_term": commitment_label,
+            "summary_narrative": f"The saved {topology}-cluster OCVS design supports the selected assessment scope.",
+        },
+        "target_clusters": target_clusters,
+        "commercial": {
+            "currency_code": str(pricing_currency or "USD").upper(),
+            "pricing_available": pricing_available,
+            "iaas_discount_pct": float(iaas_discount_pct or 0.0),
+            "commitment_term": commitment_label,
+            "monthly_cost": total_monthly if pricing_available else None,
+            "annual_cost": total_monthly * 12.0 if pricing_available else None,
+            "bom_rows": [],
+        },
+        "specialist_review_warnings": ["Draft SDD requires specialist validation before customer delivery."],
+    }
+
+
+def normalize_ocvs_target_clusters(
+    value: Any,
+    available_source_clusters: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    available = {str(name).strip() for name in (available_source_clusters or []) if str(name).strip()}
+    rows = value if isinstance(value, list) else []
+    normalized: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for index, raw in enumerate(rows[:6]):
+        if not isinstance(raw, dict):
+            continue
+        name = re.sub(r"\s+", " ", str(raw.get("name") or f"OCVS Cluster {index + 1}")).strip()[:80]
+        if not name:
+            name = f"OCVS Cluster {index + 1}"
+        base_name = name
+        suffix = 2
+        while name.lower() in seen_names:
+            name = f"{base_name} {suffix}"
+            suffix += 1
+        seen_names.add(name.lower())
+        source_clusters = raw.get("source_clusters") if isinstance(raw.get("source_clusters"), list) else []
+        clean_sources = []
+        for source in source_clusters:
+            clean = str(source or "").strip()
+            if clean and clean not in clean_sources and (not available or clean in available):
+                clean_sources.append(clean)
+        normalized.append(
+            {
+                "name": name,
+                "source_clusters": clean_sources,
+                "profile": normalize_ocvs_profile(raw.get("profile", "best_fit")),
+                "is_management": index == 0,
+            }
+        )
+    return normalized
+
+
+def parse_ocvs_target_cluster_form(
+    form: Any,
+    prefix: str,
+    available_source_clusters: list[str],
+) -> tuple[str, list[dict[str, Any]], list[str]]:
+    """Parse an optional six-cluster OCVS topology editor."""
+    errors: list[str] = []
+    topology = normalize_ocvs_topology(form.get(f"{prefix}_topology", "single"))
+    if topology == "single":
+        return topology, [], errors
+
+    available = {str(item).strip() for item in available_source_clusters if str(item).strip()}
+    valid_profiles = {"best_fit"} | {
+        str(item.get("shape") or "").strip() for item in OCVS_HOST_PROFILES
+    }
+    rows: list[dict[str, Any]] = []
+    assigned: set[str] = set()
+    for index in range(6):
+        if str(form.get(f"{prefix}_target_enabled_{index}", "")).strip() != "1":
+            continue
+        name = re.sub(r"\s+", " ", str(form.get(f"{prefix}_target_name_{index}", "")).strip())[:80]
+        profile = str(form.get(f"{prefix}_target_profile_{index}", "best_fit")).strip()
+        sources = [str(item).strip() for item in form.getlist(f"{prefix}_target_sources_{index}")]
+        sources = list(dict.fromkeys(item for item in sources if item))
+        if profile not in valid_profiles:
+            errors.append(f"Choose a valid profile for OCVS cluster {index + 1}.")
+            profile = "best_fit"
+        invalid_sources = [item for item in sources if item not in available]
+        if invalid_sources:
+            errors.append(f"Choose valid source clusters for OCVS cluster {index + 1}.")
+            sources = [item for item in sources if item in available]
+        duplicates = [item for item in sources if item in assigned]
+        if duplicates:
+            errors.append("A source cluster can be assigned to only one target OCVS cluster.")
+        assigned.update(sources)
+        if not sources:
+            errors.append(f"Assign at least one source cluster to OCVS cluster {index + 1}.")
+        rows.append(
+            {
+                "name": name or ("Unified Management" if not rows else f"OCVS Cluster {len(rows) + 1}"),
+                "source_clusters": sources,
+                "profile": profile,
+                "is_management": not rows,
+            }
+        )
+    if str(form.get(f"{prefix}_target_enabled_6", "")).strip() == "1":
+        errors.append("An OCVS SDDC supports at most six target clusters in this workflow.")
+    if not rows:
+        errors.append("Enable at least one target OCVS cluster for multi-cluster sizing.")
+    missing = sorted(available - assigned)
+    if missing:
+        errors.append("Assign every selected source cluster to a target OCVS cluster.")
+    return topology, normalize_ocvs_target_clusters(rows, available_source_clusters), errors
+
+
+def build_ocvs_multi_cluster_summary(
+    vm_rows: list[dict[str, Any]],
+    target_clusters: list[dict[str, Any]],
+    *,
+    price_lookup: dict[str, float],
+    block_storage_unit_price: float,
+    block_perf_unit_price: float,
+    iaas_discount_pct: float,
+    policy: dict[str, Any],
+    default_profile: str,
+    dr_node_count: int,
+    vmware_license_price_per_core_yearly: float,
+    ocvs_commitment_term: str,
+) -> dict[str, Any]:
+    available_sources = sorted({str(row.get("source_cluster") or "Unassigned source cluster") for row in vm_rows})
+    clusters = normalize_ocvs_target_clusters(target_clusters, available_sources)
+    assigned_sources: set[str] = set()
+    results: list[dict[str, Any]] = []
+    for index, config in enumerate(clusters):
+        sources = set(config["source_clusters"])
+        assigned_sources.update(sources)
+        scoped_rows = [row for row in vm_rows if str(row.get("source_cluster") or "Unassigned source cluster") in sources]
+        profile_choice = config["profile"] if config["profile"] != "best_fit" else default_profile
+        is_management = index == 0
+        minimum_hosts = 3 if is_management else None
+        if not is_management and profile_choice != "best_fit":
+            selected_profile = next((profile for profile in OCVS_HOST_PROFILES if profile.get("shape") == profile_choice), {})
+            minimum_hosts = 3 if str(selected_profile.get("host_type")) == "Dense" else 2
+        price = build_ocvs_price_summary(
+            vm_rows=scoped_rows,
+            price_lookup=price_lookup,
+            block_storage_unit_price=block_storage_unit_price,
+            block_perf_unit_price=block_perf_unit_price,
+            iaas_discount_pct=iaas_discount_pct,
+            policy=policy,
+            selected_profile=profile_choice,
+            dr_node_count=dr_node_count,
+            vmware_license_price_per_core_yearly=vmware_license_price_per_core_yearly,
+            ocvs_commitment_term=ocvs_commitment_term,
+            minimum_hosts=minimum_hosts,
+        )
+        if not is_management and profile_choice == "best_fit":
+            chosen = dict(price.get("selected") or {})
+            chosen_shape = str(chosen.get("shape") or "")
+            chosen_type = str(chosen.get("host_type") or "")
+            family_minimum = 3 if chosen_type == "Dense" or "DenseIO" in chosen_shape else 2
+            price = build_ocvs_price_summary(
+                vm_rows=scoped_rows,
+                price_lookup=price_lookup,
+                block_storage_unit_price=block_storage_unit_price,
+                block_perf_unit_price=block_perf_unit_price,
+                iaas_discount_pct=iaas_discount_pct,
+                policy=policy,
+                selected_profile=chosen_shape or default_profile,
+                dr_node_count=dr_node_count,
+                vmware_license_price_per_core_yearly=vmware_license_price_per_core_yearly,
+                ocvs_commitment_term=ocvs_commitment_term,
+                minimum_hosts=family_minimum,
+            )
+        selected = price["selected"]
+        monthly = float(selected.get("selection_monthly_cost", selected.get("total_monthly_cost", 0.0)) or 0.0)
+        results.append(
+            {
+                **config,
+                "is_management": is_management,
+                "vm_count": len(scoped_rows),
+                "vm_names": [str(row.get("vm_name") or "") for row in scoped_rows],
+                "totals": price["totals"],
+                "selected": selected,
+                "storage_architecture": _presentation_storage_type(selected.get("shape")),
+                "monthly_cost": monthly,
+                "annual_cost": monthly * 12.0,
+            }
+        )
+
+    unassigned_rows = [
+        row for row in vm_rows
+        if str(row.get("source_cluster") or "Unassigned source cluster") not in assigned_sources
+    ]
+    return {
+        "topology": "multi",
+        "sddc_count": 1 if results else 0,
+        "cluster_count": len(results),
+        "clusters": results,
+        "total_hosts": sum(int(item["selected"].get("host_count", 0) or 0) for item in results),
+        "total_storage_gb": sum(int(item["totals"].get("storage_gb", 0) or 0) for item in results),
+        "total_monthly_cost": sum(float(item["monthly_cost"]) for item in results),
+        "total_annual_cost": sum(float(item["annual_cost"]) for item in results),
+        "unassigned_vm_names": [str(row.get("vm_name") or "") for row in unassigned_rows],
+        "is_valid": bool(results) and not unassigned_rows and len(results) <= 6,
+    }
+
+
 def build_ocvs_price_summary(
     vm_rows: list[dict[str, Any]],
     price_lookup: dict[str, float],
@@ -5134,6 +5702,7 @@ def build_ocvs_price_summary(
     dr_node_count: int = 0,
     vmware_license_price_per_core_yearly: float = 0.0,
     ocvs_commitment_term: str = "payg",
+    minimum_hosts: int | None = None,
 ) -> dict[str, Any]:
     """Size OCVS host options from selected VM totals and return the lowest-cost profile."""
     total_vcpus = sum(int(row.get("cpus", 0) or 0) for row in vm_rows)
@@ -5160,7 +5729,12 @@ def build_ocvs_price_summary(
         ocpus = int(profile.get("ocpus", 0) or 0)
         memory_gb = int(profile.get("memory_gb", 0) or 0)
         nvme_tb = float(profile.get("nvme_tb", 0.0) or 0.0)
-        min_hosts = int(profile.get("min_hosts", 1) or 1)
+        profile_min_hosts = int(profile.get("min_hosts", 1) or 1)
+        min_hosts = (
+            max(1, int(minimum_hosts))
+            if minimum_hosts is not None
+            else profile_min_hosts
+        )
         max_hosts = int(profile.get("max_hosts", 0) or 0)
         host_type = str(profile.get("host_type", "Dense"))
 
@@ -5201,10 +5775,16 @@ def build_ocvs_price_summary(
         ocpu_unit_price = float(price_lookup.get(ocpu_display_name, 0.0))
         memory_unit_price = float(price_lookup.get(memory_display_name, 0.0))
         nvme_unit_price = float(price_lookup.get(nvme_display_name, 0.0))
+        # Older fixed OCVS shapes (for example BM.Standard2.52 and
+        # BM.DenseIO2.52) are published as a bundled host SKU.  Their profile
+        # intentionally has no separate memory and/or NVMe display name, so an
+        # absent component name means that component is included in the OCPU
+        # SKU rather than that pricing is unavailable.
         required_host_prices_available = bool(
-            ocpu_unit_price > 0.0
-            and memory_unit_price > 0.0
-            and (nvme_tb <= 0.0 or (nvme_display_name and nvme_unit_price > 0.0))
+            ocpu_display_name
+            and ocpu_unit_price > 0.0
+            and (not memory_display_name or memory_unit_price > 0.0)
+            and (not nvme_display_name or nvme_unit_price > 0.0)
         )
         required_storage_prices_available = bool(
             host_type != "Standard"
@@ -5762,6 +6342,74 @@ def build_migration_waves(
         "ocvs_candidate_count": len(ocvs_rows),
         "powered_off_count": len(powered_off_rows),
     }
+
+
+def build_migration_plan_records(
+    vm_rows: list[dict[str, Any]],
+    hybrid_placement_plan: dict[str, Any],
+    ocvs_multi_cluster: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Build a vendor-neutral migration-planning payload for future adapters."""
+    placements = {
+        str(row.get("vm_name") or ""): str(row.get("hybrid_effective_target") or "review")
+        for row in list((hybrid_placement_plan or {}).get("rows") or [])
+    }
+    target_by_vm: dict[str, str] = {}
+    target_shape_by_vm: dict[str, str] = {}
+    for cluster in list((ocvs_multi_cluster or {}).get("clusters") or []):
+        selected = cluster.get("selected") if isinstance(cluster.get("selected"), dict) else {}
+        target_shape = str(selected.get("shape") or "")
+        for vm_name in list(cluster.get("vm_names") or []):
+            target_by_vm[str(vm_name)] = str(cluster.get("name") or "")
+            target_shape_by_vm[str(vm_name)] = target_shape
+    records: list[dict[str, Any]] = []
+    for row in vm_rows:
+        vm_name = str(row.get("vm_name") or "")
+        power = str(row.get("power_state") or "")
+        target = placements.get(vm_name, "review")
+        if "off" in power.lower():
+            wave = 4
+        elif target == "native":
+            wave = 1
+        elif target == "ocvs":
+            wave = 3
+        else:
+            wave = 2
+        if wave == 1:
+            priority = "High"
+        elif wave in {2, 3}:
+            priority = "Medium"
+        else:
+            priority = "Deferred"
+        native_shape = _presentation_compute_shape_name(row.get("oci_shape"))
+        target_shape = native_shape if target == "native" else target_shape_by_vm.get(vm_name, "")
+        notes = row.get("notes")
+        if isinstance(notes, list):
+            notes = "; ".join(str(item) for item in notes if str(item).strip())
+        records.append(
+            {
+                "vm_name": vm_name,
+                "source_cluster": str(row.get("source_cluster") or "Unassigned source cluster"),
+                "source_vcenter": str(row.get("source_vcenter") or ""),
+                "source_datacenter": str(row.get("source_datacenter") or ""),
+                "target_platform": "OCI Native" if target == "native" else ("OCVS" if target == "ocvs" else "Review"),
+                "target_cluster": target_by_vm.get(vm_name, ""),
+                "target_shape": target_shape,
+                "suggested_wave": wave,
+                "dependency_group": "",
+                "migration_priority": priority,
+                "readiness_status": str(row.get("native_status") or "Pending assessment"),
+                "validation_status": "Pending validation",
+                "cutover_status": "Not started",
+                "rollback_status": "Not planned",
+                "owner": "",
+                "planned_start": "",
+                "planned_end": "",
+                "execution_tool": "Unassigned",
+                "notes": str(notes or ""),
+            }
+        )
+    return records
 
 
 def _pct_of_max(value: float, maximum: float, minimum: float = 2.0) -> float:
@@ -6345,6 +6993,19 @@ def build_current_price_page_context() -> tuple[dict[str, Any] | None, str]:
     if not isinstance(selected_vm_names, list):
         selected_vm_names = []
     selected_vm_names = [n for n in selected_vm_names if n in vm_index]
+    sizing_scope_mode = normalize_sizing_scope_mode(app_state.get("sizing_scope_mode"))
+    available_source_clusters = sorted(
+        {str(vm.get("source_cluster") or "Unassigned source cluster") for vm in all_vms},
+        key=lambda value: (value == "Unassigned source cluster", value.lower()),
+    )
+    selected_source_clusters = [
+        str(value) for value in app_state.get("selected_source_clusters", [])
+        if str(value) in available_source_clusters
+    ]
+    ocvs_topology = normalize_ocvs_topology(app_state.get("step4_ocvs_topology"))
+    ocvs_target_clusters = normalize_ocvs_target_clusters(app_state.get("step4_ocvs_target_clusters"), available_source_clusters)
+    hybrid_ocvs_topology = normalize_ocvs_topology(app_state.get("step4_hybrid_ocvs_topology"))
+    hybrid_ocvs_target_clusters = normalize_ocvs_target_clusters(app_state.get("step4_hybrid_ocvs_target_clusters"), available_source_clusters)
     selected_vms = [vm_index[name] for name in selected_vm_names if name in vm_index]
     if not selected_vms:
         flash("No VMs selected yet. Please select VMs in Step 2 first.", "error")
@@ -6470,6 +7131,43 @@ def build_current_price_page_context() -> tuple[dict[str, Any] | None, str]:
         hybrid_ocvs_commitment_term=hybrid_ocvs_assumptions["commitment_term"],
         hybrid_placement_selection=hybrid_placement_selection,
     )
+    source_cluster_summaries = build_source_cluster_summaries(vm_rows, selected_vm_names)
+    ocvs_multi_cluster = None
+    if ocvs_topology == "multi":
+        ocvs_multi_cluster = build_ocvs_multi_cluster_summary(
+            vm_rows,
+            ocvs_target_clusters,
+            price_lookup=price_lookup,
+            block_storage_unit_price=block_storage_unit_price,
+            block_perf_unit_price=block_perf_unit_price,
+            iaas_discount_pct=iaas_discount_pct,
+            policy=ocvs_policy,
+            default_profile=ocvs_profile_choice,
+            dr_node_count=ocvs_dr_nodes,
+            vmware_license_price_per_core_yearly=vmware_license_price_per_core_yearly,
+            ocvs_commitment_term=ocvs_commitment_term,
+        )
+    hybrid_ocvs_multi_cluster = None
+    if hybrid_ocvs_topology == "multi":
+        hybrid_ocvs_multi_cluster = build_ocvs_multi_cluster_summary(
+            list(analysis.get("unsupported_ocvs_rows") or []),
+            hybrid_ocvs_target_clusters,
+            price_lookup=price_lookup,
+            block_storage_unit_price=block_storage_unit_price,
+            block_perf_unit_price=block_perf_unit_price,
+            iaas_discount_pct=iaas_discount_pct,
+            policy=hybrid_ocvs_assumptions["policy"],
+            default_profile=hybrid_ocvs_assumptions["profile_choice"],
+            dr_node_count=hybrid_ocvs_assumptions["dr_nodes"],
+            vmware_license_price_per_core_yearly=hybrid_ocvs_assumptions["vmware_license_price_per_core_yearly"],
+            ocvs_commitment_term=hybrid_ocvs_assumptions["commitment_term"],
+        )
+    analysis["source_cluster_summaries"] = source_cluster_summaries
+    analysis["sizing_scope_mode"] = normalize_sizing_scope_mode(app_state.get("sizing_scope_mode"))
+    analysis["ocvs_topology"] = ocvs_topology
+    analysis["ocvs_multi_cluster"] = ocvs_multi_cluster
+    analysis["hybrid_ocvs_topology"] = hybrid_ocvs_topology
+    analysis["hybrid_ocvs_multi_cluster"] = hybrid_ocvs_multi_cluster
     migration_waves = build_migration_waves(
         vm_rows=vm_rows,
         supported_native_rows=analysis["supported_native_rows"],
@@ -6687,30 +7385,51 @@ def build_scenario_view(scenario_id: str, context: dict[str, Any]) -> dict[str, 
         title = "OCVS"
         intro = "Lift and shift selected VMware workloads to OCVS while preserving the VMware operating model and compatibility assumptions."
         vmware_full = vmware_summary["ocvs"]
-        cards = [
-            {"label": "Monthly cost", "value": money(scenario.get("monthly_cost")), "kind": "money"},
-            {"label": "Annual cost", "value": money(scenario.get("yearly_cost")), "kind": "money"},
-            {"label": "Cost / VM / month", "value": money(scenario.get("cost_per_vm")), "kind": "money"},
-            {"label": "Total OCVS nodes", "value": int(ocvs_selected.get("host_count", 0) or 0), "kind": "number"},
-            {"label": "Capacity driver", "value": ocvs_driver_name(ocvs_selected.get("constraint")), "kind": "text"},
-        ]
-        detail_rows = [
-            {"label": "Selected shape", "value": str(ocvs_selected.get("shape", ""))},
-            {"label": "Sizing driver", "value": ocvs_driver_name(ocvs_selected.get("constraint"))},
-            {"label": "Workload nodes", "value": f"{int(ocvs_selected.get('base_host_count', 0) or 0):,}"},
-            {"label": "Spare nodes", "value": f"+{int(ocvs_selected.get('dr_node_count', 0) or 0):,}"},
-            {"label": "Total OCVS nodes", "value": f"{int(ocvs_selected.get('host_count', 0) or 0):,}"},
-            {
-                "label": "Cluster plan",
-                "value": (
-                    "Multi-cluster"
-                    if bool(ocvs_selected.get("cluster_split_required", False))
-                    else "Single cluster"
-                ),
-            },
-            {"label": "Physical cores", "value": f"{int(vmware_full.get('physical_cores', 0) or 0):,}"},
-            {"label": "VCF license / month", "value": money(vmware_full.get("monthly_cost")), "kind": "money"},
-        ]
+        ocvs_multi_cluster = context.get("ocvs_multi_cluster")
+        if isinstance(ocvs_multi_cluster, dict) and ocvs_multi_cluster.get("is_valid"):
+            multi_monthly = money(ocvs_multi_cluster.get("total_monthly_cost"))
+            multi_vm_count = int(scenario.get("ocvs_vm_count", 0) or overall.get("vm_count", 0) or 0)
+            scenario = {
+                **scenario,
+                "monthly_cost": multi_monthly,
+                "yearly_cost": multi_monthly * 12.0,
+                "cost_per_vm": multi_monthly / multi_vm_count if multi_vm_count else 0.0,
+            }
+            title = "Multi-cluster OCVS migration results"
+            intro = "Review multi-cluster sizing, pricing completeness, and readiness before recording the specialist decision."
+            cards = [
+                {"label": "Monthly cost", "value": multi_monthly, "kind": "money"},
+                {"label": "Annual cost", "value": multi_monthly * 12.0, "kind": "money"},
+                {"label": "Total OCVS nodes", "value": int(ocvs_multi_cluster.get("total_hosts", 0) or 0), "kind": "number"},
+                {"label": "Target clusters", "value": int(ocvs_multi_cluster.get("cluster_count", 0) or 0), "kind": "number"},
+            ]
+            detail_rows = []
+        else:
+            ocvs_multi_cluster = None
+            cards = [
+                {"label": "Monthly cost", "value": money(scenario.get("monthly_cost")), "kind": "money"},
+                {"label": "Annual cost", "value": money(scenario.get("yearly_cost")), "kind": "money"},
+                {"label": "Cost / VM / month", "value": money(scenario.get("cost_per_vm")), "kind": "money"},
+                {"label": "Total OCVS nodes", "value": int(ocvs_selected.get("host_count", 0) or 0), "kind": "number"},
+                {"label": "Capacity driver", "value": ocvs_driver_name(ocvs_selected.get("constraint")), "kind": "text"},
+            ]
+            detail_rows = [
+                {"label": "Selected shape", "value": str(ocvs_selected.get("shape", ""))},
+                {"label": "Sizing driver", "value": ocvs_driver_name(ocvs_selected.get("constraint"))},
+                {"label": "Workload nodes", "value": f"{int(ocvs_selected.get('base_host_count', 0) or 0):,}"},
+                {"label": "Spare nodes", "value": f"+{int(ocvs_selected.get('dr_node_count', 0) or 0):,}"},
+                {"label": "Total OCVS nodes", "value": f"{int(ocvs_selected.get('host_count', 0) or 0):,}"},
+                {
+                    "label": "Cluster plan",
+                    "value": (
+                        "Multi-cluster"
+                        if bool(ocvs_selected.get("cluster_split_required", False))
+                        else "Single cluster"
+                    ),
+                },
+                {"label": "Physical cores", "value": f"{int(vmware_full.get('physical_cores', 0) or 0):,}"},
+                {"label": "VCF license / month", "value": money(vmware_full.get("monthly_cost")), "kind": "money"},
+            ]
         assumptions = []
     else:
         title = "Hybrid"
@@ -6750,6 +7469,7 @@ def build_scenario_view(scenario_id: str, context: dict[str, Any]) -> dict[str, 
         "cards": cards,
         "composition": composition,
         "detail_rows": detail_rows,
+        "multi_cluster": ocvs_multi_cluster if scenario_id == "ocvs" else None,
         "assumptions": assumptions,
     }
 
@@ -6905,6 +7625,11 @@ def build_results_page_context(
                 "rankable": status.get("rankable") is True,
                 "is_lowest_complete": scenario_id == lowest_complete,
                 "detail_rows": detail_rows,
+                "multi_cluster": (
+                    view.get("multi_cluster")
+                    if isinstance(view.get("multi_cluster"), dict)
+                    else None
+                ),
                 "assumptions": list(copy_values["assumptions"]),
                 "benefits": list(copy_values["benefits"]),
                 "tradeoffs": list(copy_values["tradeoffs"]),
@@ -7000,11 +7725,35 @@ def _presentation_tb(value: Any) -> str:
 
 
 def _presentation_tb_number(value: Any) -> str:
-    """Format a GB value as a numeric TB value for templates that own the unit."""
+    """Format a storage value as compact TB for templates that own the unit.
+
+    Numeric sizing values are stored in GB.  A text value explicitly carrying
+    a TB suffix is already in TB and is therefore not converted again.
+    """
     try:
-        return f"{float(value or 0) / 1024.0:,.1f}"
+        if isinstance(value, str):
+            normalized = value.strip().replace(",", "")
+            if normalized.lower().endswith("tb"):
+                number = float(normalized[:-2].strip() or 0)
+            elif normalized.lower().endswith("gb"):
+                number = float(normalized[:-2].strip() or 0) / 1024.0
+            else:
+                number = float(normalized or 0) / 1024.0
+        else:
+            number = float(value or 0) / 1024.0
+        return f"{number:.1f}".rstrip("0").rstrip(".")
     except (TypeError, ValueError):
-        return "0.0"
+        return "0"
+
+
+def format_storage_gb_and_tb(value: Any) -> str:
+    """Show an application sizing value in its stored GB unit and in TB."""
+    try:
+        gb_value = float(value or 0)
+    except (TypeError, ValueError):
+        return "0 GB (0 TB)"
+    gb_label = f"{gb_value:,.0f}" if gb_value.is_integer() else f"{gb_value:,.1f}".rstrip("0").rstrip(".")
+    return f"{gb_label} GB ({_presentation_tb_number(gb_value)} TB)"
 
 
 def _presentation_storage_type(shape: Any) -> str:
@@ -7031,6 +7780,325 @@ def _presentation_decimal(value: Any) -> float:
         return float(value or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _presentation_currency_amount(value: Any, currency: Any) -> str:
+    """Format an available price for the customer-facing presentation."""
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return "Not available"
+    if not math.isfinite(amount):
+        return "Not available"
+    code = str(currency or "USD").strip().upper() or "USD"
+    symbols = {
+        "AUD": "A$",
+        "CAD": "C$",
+        "CHF": "CHF ",
+        "DKK": "kr ",
+        "EUR": "€",
+        "GBP": "£",
+        "JPY": "¥",
+        "NOK": "kr ",
+        "SEK": "kr ",
+        "SGD": "S$",
+        "USD": "$",
+    }
+    prefix = symbols.get(code, f"{code} ")
+    return f"{prefix}{amount:,.0f}"
+
+
+def _presentation_ocvs_term_monthly_values(selected: Any) -> dict[str, float] | None:
+    """Return comparable OCVS monthly prices for the supported commitment terms."""
+    if not isinstance(selected, dict) or not selected.get("pricing_available"):
+        return None
+
+    shape = str(selected.get("shape") or "")
+    host_count = _presentation_decimal(selected.get("host_count"))
+    discounted_host_rate = _presentation_decimal(selected.get("host_monthly_cost"))
+    storage_monthly = _presentation_decimal(selected.get("storage_monthly_cost"))
+    active_discount_pct = _presentation_decimal(selected.get("commitment_discount_pct"))
+    active_factor = max(0.0, min(1.0, 1.0 - (active_discount_pct / 100.0)))
+    if active_factor <= 0.0:
+        return None
+    pre_term_host_rate = discounted_host_rate / active_factor
+
+    values: dict[str, float] = {}
+    for presentation_key, commitment_term in {
+        "payg": "payg",
+        "one-year": "1_year",
+        "three-year": "3_year",
+    }.items():
+        term_discount_pct = ocvs_term_discount_pct(shape, commitment_term)
+        term_factor = max(0.0, min(1.0, 1.0 - (term_discount_pct / 100.0)))
+        infrastructure_monthly = host_count * pre_term_host_rate * term_factor
+        values[f"{presentation_key}-infrastructure"] = infrastructure_monthly
+        values[f"{presentation_key}-storage"] = storage_monthly
+        values[f"{presentation_key}-total"] = infrastructure_monthly + storage_monthly
+    return values
+
+
+def _presentation_ocvs_pricing_replacements(
+    selected: Any, pricing_currency: Any
+) -> dict[str, str]:
+    """Return commitment comparison values from the selected final OCVS result.
+
+    The sizing selection remains fixed across the three commercial terms.  The
+    app's host rate already carries the active IaaS discount and active term
+    discount, so the alternate-term values derive the pre-term host rate and
+    then apply each configured OCVS commitment discount.  Block storage is
+    priced independently in the current model and therefore remains unchanged
+    across commitment terms.
+    """
+    unavailable = "Not available"
+    keys = ("payg", "one-year", "three-year")
+    replacements = {
+        f"editable-ocvs-pricing-{key}-{field}": unavailable
+        for key in keys
+        for field in ("infrastructure", "storage", "monthly-total", "annual-total")
+    }
+    term_values = _presentation_ocvs_term_monthly_values(selected)
+    if term_values is None:
+        return replacements
+
+    for presentation_key in keys:
+        infrastructure_monthly = term_values[f"{presentation_key}-infrastructure"]
+        storage_monthly = term_values[f"{presentation_key}-storage"]
+        monthly_total = term_values[f"{presentation_key}-total"]
+        replacements.update(
+            {
+                f"editable-ocvs-pricing-{presentation_key}-infrastructure": _presentation_currency_amount(
+                    infrastructure_monthly, pricing_currency
+                ),
+                f"editable-ocvs-pricing-{presentation_key}-storage": _presentation_currency_amount(
+                    storage_monthly, pricing_currency
+                ),
+                f"editable-ocvs-pricing-{presentation_key}-monthly-total": _presentation_currency_amount(
+                    monthly_total, pricing_currency
+                ),
+                f"editable-ocvs-pricing-{presentation_key}-annual-total": _presentation_currency_amount(
+                    monthly_total * 12.0, pricing_currency
+                ),
+            }
+        )
+    return replacements
+
+
+def _presentation_multi_cluster_term_values(
+    multi_cluster: Any,
+) -> dict[str, float] | None:
+    """Aggregate comparable OCVS term prices without hiding an unavailable cluster."""
+    if not isinstance(multi_cluster, dict):
+        return None
+    clusters = list(multi_cluster.get("clusters") or [])
+    if not clusters:
+        return None
+    keys = ("payg", "one-year", "three-year")
+    totals = {
+        f"{key}-{field}": 0.0
+        for key in keys
+        for field in ("infrastructure", "storage", "total")
+    }
+    for cluster in clusters:
+        selected = cluster.get("selected") if isinstance(cluster, dict) else None
+        values = _presentation_ocvs_term_monthly_values(selected)
+        if values is None:
+            return None
+        for key in keys:
+            for field in ("infrastructure", "storage", "total"):
+                totals[f"{key}-{field}"] += float(values[f"{key}-{field}"])
+    return totals
+
+
+def _presentation_ocvs_multi_pricing_replacements(
+    multi_cluster: Any, pricing_currency: Any
+) -> dict[str, str]:
+    """Return the three-term pricing summary for the saved target-cluster plan."""
+    unavailable = "Not available"
+    keys = ("payg", "one-year", "three-year")
+    replacements = {
+        f"editable-ocvs-pricing-{key}-{field}": unavailable
+        for key in keys
+        for field in ("infrastructure", "storage", "monthly-total", "annual-total")
+    }
+    clusters = list(multi_cluster.get("clusters") or []) if isinstance(multi_cluster, dict) else []
+    names = [str(cluster.get("name") or "Target cluster") for cluster in clusters]
+    expanded_context = f"{len(clusters)} target clusters: {', '.join(names)}"
+    replacements["editable-ocvs-multi-pricing-context"] = (
+        expanded_context
+        if len(expanded_context) <= 105
+        else f"{len(clusters)} target OCVS clusters included in the pricing"
+    )
+    values = _presentation_multi_cluster_term_values(multi_cluster)
+    if values is None:
+        return replacements
+    for key in keys:
+        infrastructure = values[f"{key}-infrastructure"]
+        storage = values[f"{key}-storage"]
+        monthly = values[f"{key}-total"]
+        replacements.update(
+            {
+                f"editable-ocvs-pricing-{key}-infrastructure": _presentation_currency_amount(infrastructure, pricing_currency),
+                f"editable-ocvs-pricing-{key}-storage": _presentation_currency_amount(storage, pricing_currency),
+                f"editable-ocvs-pricing-{key}-monthly-total": _presentation_currency_amount(monthly, pricing_currency),
+                f"editable-ocvs-pricing-{key}-annual-total": _presentation_currency_amount(monthly * 12.0, pricing_currency),
+            }
+        )
+    return replacements
+
+
+def _presentation_ocvs_pricing_detail_replacements(
+    multi_cluster: Any, pricing_currency: Any
+) -> dict[str, str]:
+    """Return active-term detail rows for each enabled target OCVS cluster."""
+    clusters = list(multi_cluster.get("clusters") or [])[:6] if isinstance(multi_cluster, dict) else []
+    term = "payg"
+    if clusters:
+        selected = clusters[0].get("selected") if isinstance(clusters[0].get("selected"), dict) else {}
+        term = normalize_ocvs_commitment_term(selected.get("commitment_term") or "payg")
+    term_key = {"payg": "payg", "1_year": "one-year", "3_year": "three-year"}.get(term, "payg")
+    term_label = OCVS_COMMITMENT_LABELS.get(term, OCVS_COMMITMENT_LABELS["payg"])
+    replacements: dict[str, str] = {"editable-ocvs-pricing-detail-term": term_label}
+    total_sources = 0
+    total_nodes = 0
+    total_infrastructure = 0.0
+    total_storage = 0.0
+    all_priced = bool(clusters)
+    for index in range(6):
+        display = index + 1
+        cluster = clusters[index] if index < len(clusters) else {}
+        if not cluster:
+            for field in ("cluster", "source", "shape", "infrastructure", "storage", "monthly", "annual"):
+                replacements[f"editable-ocvs-pricing-detail-row-{display}-{field}"] = ""
+            continue
+        selected = cluster.get("selected") if isinstance(cluster.get("selected"), dict) else {}
+        source_count = len(list(cluster.get("source_clusters") or []))
+        nodes = int(selected.get("host_count", 0) or 0)
+        total_sources += source_count
+        total_nodes += nodes
+        values = _presentation_ocvs_term_monthly_values(selected)
+        if values is None:
+            all_priced = False
+            infrastructure_value = storage_value = monthly_value = annual_value = "Not available"
+        else:
+            infrastructure = values[f"{term_key}-infrastructure"]
+            storage = values[f"{term_key}-storage"]
+            monthly = values[f"{term_key}-total"]
+            total_infrastructure += infrastructure
+            total_storage += storage
+            infrastructure_value = _presentation_currency_amount(infrastructure, pricing_currency)
+            storage_value = _presentation_currency_amount(storage, pricing_currency)
+            monthly_value = _presentation_currency_amount(monthly, pricing_currency)
+            annual_value = _presentation_currency_amount(monthly * 12.0, pricing_currency)
+        replacements.update(
+            {
+                f"editable-ocvs-pricing-detail-row-{display}-cluster": str(cluster.get("name") or f"Target cluster {display}"),
+                f"editable-ocvs-pricing-detail-row-{display}-source": f"{source_count} source cluster{'s' if source_count != 1 else ''}",
+                f"editable-ocvs-pricing-detail-row-{display}-shape": f"{selected.get('shape') or 'Not provided'} × {nodes}",
+                f"editable-ocvs-pricing-detail-row-{display}-infrastructure": infrastructure_value,
+                f"editable-ocvs-pricing-detail-row-{display}-storage": storage_value,
+                f"editable-ocvs-pricing-detail-row-{display}-monthly": monthly_value,
+                f"editable-ocvs-pricing-detail-row-{display}-annual": annual_value,
+            }
+        )
+    replacements.update(
+        {
+            "editable-ocvs-pricing-detail-total-cluster": "ALL TARGET CLUSTERS",
+            "editable-ocvs-pricing-detail-total-source": f"{total_sources} source cluster{'s' if total_sources != 1 else ''}",
+            "editable-ocvs-pricing-detail-total-shape": f"{total_nodes} nodes",
+            "editable-ocvs-pricing-detail-total-infrastructure": _presentation_currency_amount(total_infrastructure, pricing_currency) if all_priced else "Not available",
+            "editable-ocvs-pricing-detail-total-storage": _presentation_currency_amount(total_storage, pricing_currency) if all_priced else "Not available",
+            "editable-ocvs-pricing-detail-total-monthly": _presentation_currency_amount(total_infrastructure + total_storage, pricing_currency) if all_priced else "Not available",
+            "editable-ocvs-pricing-detail-total-annual": _presentation_currency_amount((total_infrastructure + total_storage) * 12.0, pricing_currency) if all_priced else "Not available",
+        }
+    )
+    return replacements
+
+
+def _presentation_native_pricing_replacements(
+    summary: Any, pricing_currency: Any
+) -> dict[str, str]:
+    """Return OCI Native Compute and Block Volume totals for its pricing slide."""
+    unavailable = "Not available"
+    replacements = {
+        "editable-native-pricing-compute": unavailable,
+        "editable-native-pricing-storage": unavailable,
+        "editable-native-pricing-monthly-total": unavailable,
+        "editable-native-pricing-annual-total": unavailable,
+    }
+    if not isinstance(summary, dict) or "total_monthly_cost" not in summary:
+        return replacements
+    compute_monthly = (
+        _presentation_decimal(summary.get("total_cpu_ram_monthly_cost"))
+        + _presentation_decimal(summary.get("total_os_license_monthly_cost"))
+    )
+    storage_monthly = _presentation_decimal(summary.get("total_storage_monthly_cost"))
+    monthly_total = _presentation_decimal(summary.get("total_monthly_cost"))
+    return {
+        "editable-native-pricing-compute": _presentation_currency_amount(
+            compute_monthly, pricing_currency
+        ),
+        "editable-native-pricing-storage": _presentation_currency_amount(
+            storage_monthly, pricing_currency
+        ),
+        "editable-native-pricing-monthly-total": _presentation_currency_amount(
+            monthly_total, pricing_currency
+        ),
+        "editable-native-pricing-annual-total": _presentation_currency_amount(
+            monthly_total * 12.0, pricing_currency
+        ),
+    }
+
+
+def _presentation_hybrid_pricing_replacements(
+    *, native_summary: Any, selected_ocvs: Any, pricing_currency: Any,
+    ocvs_multi_cluster: Any = None,
+) -> dict[str, str]:
+    """Return fixed Native plus variable OCVS commitment totals for Hybrid."""
+    unavailable = "Not available"
+    keys = ("payg", "one-year", "three-year")
+    replacements = {
+        "editable-hybrid-pricing-native-monthly": unavailable,
+        **{
+            f"editable-hybrid-pricing-{key}-{field}": unavailable
+            for key in keys
+            for field in ("ocvs", "native", "monthly-total", "annual-total")
+        },
+    }
+    if not isinstance(native_summary, dict) or "total_monthly_cost" not in native_summary:
+        return replacements
+    native_monthly = _presentation_decimal(native_summary.get("total_monthly_cost"))
+    native_value = _presentation_currency_amount(native_monthly, pricing_currency)
+    replacements["editable-hybrid-pricing-native-monthly"] = native_value
+    for key in keys:
+        replacements[f"editable-hybrid-pricing-{key}-native"] = native_value
+
+    term_values = (
+        _presentation_multi_cluster_term_values(ocvs_multi_cluster)
+        if isinstance(ocvs_multi_cluster, dict)
+        and ocvs_multi_cluster.get("topology") == "multi"
+        and ocvs_multi_cluster.get("clusters")
+        else _presentation_ocvs_term_monthly_values(selected_ocvs)
+    )
+    if term_values is None:
+        return replacements
+    for key in keys:
+        ocvs_monthly = term_values[f"{key}-total"]
+        hybrid_monthly = native_monthly + ocvs_monthly
+        replacements.update(
+            {
+                f"editable-hybrid-pricing-{key}-ocvs": _presentation_currency_amount(
+                    ocvs_monthly, pricing_currency
+                ),
+                f"editable-hybrid-pricing-{key}-monthly-total": _presentation_currency_amount(
+                    hybrid_monthly, pricing_currency
+                ),
+                f"editable-hybrid-pricing-{key}-annual-total": _presentation_currency_amount(
+                    hybrid_monthly * 12.0, pricing_currency
+                ),
+            }
+        )
+    return replacements
 
 
 def _presentation_compute_shape_name(shape: Any) -> str:
@@ -7068,7 +8136,16 @@ def _presentation_native_mix_rows(vm_rows: list[dict[str, Any]]) -> tuple[list[d
         shape_group["ocpus"] += ocpus
         shape_group["ram_gb"] += ram_gb
 
-        vpu_group = vpu_groups.setdefault(vpu, {"vpu": vpu, "vms": 0.0, "total_vpu": 0.0, "storage_gb": 0.0})
+        vpu_group = vpu_groups.setdefault(
+            vpu,
+            {
+                "vpu": vpu,
+                "tier": _presentation_vpu_performance_tier(vpu),
+                "vms": 0.0,
+                "total_vpu": 0.0,
+                "storage_gb": 0.0,
+            },
+        )
         vpu_group["vms"] += 1
         vpu_group["total_vpu"] += vpu
         vpu_group["storage_gb"] += storage_gb
@@ -7078,12 +8155,24 @@ def _presentation_native_mix_rows(vm_rows: list[dict[str, Any]]) -> tuple[list[d
     return shapes, vpus, totals
 
 
-def _presentation_limit_mix_rows(rows: list[dict[str, Any]], *, kind: str) -> list[dict[str, Any]]:
-    """Fit a dynamic distribution into the template's three visible rows."""
-    if len(rows) <= 3:
+def _presentation_vpu_performance_tier(vpu: Any) -> str:
+    """Return the customer-facing Block Volume performance tier for a VPU value."""
+    value = _presentation_decimal(vpu)
+    if value <= 20:
+        return "Balanced 10K IOPS"
+    if value <= 60:
+        return "Balanced 20K IOPS"
+    return "High Performance 60K"
+
+
+def _presentation_limit_mix_rows(
+    rows: list[dict[str, Any]], *, kind: str, max_rows: int = 3
+) -> list[dict[str, Any]]:
+    """Fit a dynamic distribution into the available editable presentation rows."""
+    if len(rows) <= max_rows:
         return rows
-    visible = rows[:2]
-    remaining = rows[2:]
+    visible = rows[: max_rows - 1]
+    remaining = rows[max_rows - 1 :]
     if kind == "shape":
         visible.append({
             "shape": "Other OCI Compute shapes",
@@ -7094,6 +8183,7 @@ def _presentation_limit_mix_rows(rows: list[dict[str, Any]], *, kind: str) -> li
     else:
         visible.append({
             "vpu": "Other VPU values",
+            "tier": "Multiple tiers",
             "vms": sum(row["vms"] for row in remaining),
             "total_vpu": sum(row["total_vpu"] for row in remaining),
             "storage_gb": sum(row["storage_gb"] for row in remaining),
@@ -7126,10 +8216,525 @@ def _replace_presentation_named_text(xml_text: str, replacements: dict[str, str]
     return re.sub(r"<p:sp\b.*?</p:sp>", replace_shape, xml_text, flags=re.DOTALL)
 
 
+def _compact_compute_summary_rows(
+    xml_text: str, *, compute_row_count: int, storage_row_count: int
+) -> str:
+    """Remove unused OCI Compute mix rows and move each Total row upward.
+
+    The OCI Compute template supplies four editable rows.  Generated exports
+    remove unused row text and separator shapes rather than leaving sample
+    lines behind.  The remaining Total row moves directly below the visible
+    data rows while preserving the slide's existing geometry and styling.
+    """
+    if "native-compute-row-" not in xml_text:
+        return xml_text
+
+    max_rows = 4
+    row_height_emu = 38 * 9525
+
+    def has_name(shape: str, pattern: str) -> bool:
+        name = re.search(r'<p:cNvPr\b[^>]*\bname="([^"]*)"', shape)
+        return bool(name and re.fullmatch(pattern, xml_unescape(name.group(1))))
+
+    def remove_unused_rows(kind: str, count: int, text: str) -> str:
+        for index in range(max(0, count) + 1, max_rows + 1):
+            if kind == "compute":
+                pattern = rf"(?:editable-native-shape-(?:vms-|ocpus-|ram-)?row-{index}|native-compute-row-{index}-line)"
+            else:
+                pattern = rf"(?:editable-native-vpu-(?:label|tier|per-vm|vms|total|storage)-row-{index}|native-storage-row-{index}-line)"
+            text = re.sub(
+                r"<p:sp\b.*?</p:sp>",
+                lambda match: "" if has_name(match.group(0), pattern) else match.group(0),
+                text,
+                flags=re.DOTALL,
+            )
+        return text
+
+    def shift_total_rows(kind: str, count: int, text: str) -> str:
+        offset = max(0, max_rows - count) * row_height_emu
+        if not offset:
+            return text
+        if kind == "compute":
+            pattern = r"(?:native-compute-total-.+|editable-native-total-(?:vms|ocpus|vram))"
+        else:
+            pattern = r"(?:native-storage-total-.+|editable-native-storage-vm-count|editable-native-total-(?:vpus|storage))"
+
+        def shift_shape(match: re.Match[str]) -> str:
+            shape = match.group(0)
+            if not has_name(shape, pattern):
+                return shape
+
+            def shift_y(position: re.Match[str]) -> str:
+                return f'{position.group(1)}{int(position.group(2)) - offset}{position.group(3)}'
+
+            return re.sub(
+                r'(<a:off\b[^>]*\by=")(\d+)("[^>]*/>)',
+                shift_y,
+                shape,
+                count=1,
+            )
+
+        return re.sub(r"<p:sp\b.*?</p:sp>", shift_shape, text, flags=re.DOTALL)
+
+    xml_text = remove_unused_rows("compute", compute_row_count, xml_text)
+    xml_text = remove_unused_rows("storage", storage_row_count, xml_text)
+    xml_text = shift_total_rows("compute", compute_row_count, xml_text)
+    return shift_total_rows("storage", storage_row_count, xml_text)
+
+
+def _compact_cluster_aware_rows(
+    xml_text: str, *, source_cluster_count: int, target_cluster_count: int
+) -> str:
+    """Remove unused editable cluster rows from the generated customer deck."""
+    def remove_rows(prefixes: tuple[str, ...], keep: int, text: str) -> str:
+        for index in range(max(0, keep) + 1, 7):
+            patterns = [rf"{re.escape(prefix)}.*row-{index}(?:-.*)?" for prefix in prefixes]
+            combined = re.compile(rf"(?:{'|'.join(patterns)})", re.IGNORECASE)
+
+            def maybe_remove(match: re.Match[str]) -> str:
+                name = re.search(r'<p:cNvPr\b[^>]*\bname="([^"]*)"', match.group(0))
+                return "" if name and combined.fullmatch(xml_unescape(name.group(1))) else match.group(0)
+
+            text = re.sub(r"<p:sp\b.*?</p:sp>", maybe_remove, text, flags=re.DOTALL)
+        return text
+
+    xml_text = remove_rows(("editable-source-cluster-", "current-cluster-"), source_cluster_count, xml_text)
+    return remove_rows(("editable-ocvs-cluster-", "ocvs-cluster-"), target_cluster_count, xml_text)
+
+
+PRESENTATION_ASSUMPTIONS_SLIDES = {
+    "block": Path(__file__).resolve().parent / "Assumptions_and_Methodology_OCI_Block_Volume_editable.pptx",
+    "vsan": Path(__file__).resolve().parent / "Assumptions_and_Methodology_vSAN_editable.pptx",
+}
+PRESENTATION_SINGLE_CLUSTER_VARIANTS_DIR = (
+    Path(__file__).resolve().parent / "presentation_templates" / "single_cluster_variants"
+)
+PRESENTATION_MULTI_CLUSTER_PRICING_SUMMARY = (
+    Path(__file__).resolve().parent / "presentation_assets" / "OCVS Multi-Cluster Pricing Summary.pptx"
+)
+PRESENTATION_MULTI_CLUSTER_PRICING_DETAIL = (
+    Path(__file__).resolve().parent / "presentation_assets" / "OCVS Pricing Detail by Target Cluster.pptx"
+)
+
+
+def _presentation_assumptions_slide_kind(shape: Any) -> str:
+    """Choose the editable assumptions slide from the final OCVS host family."""
+    return "vsan" if str(shape or "").strip().lower().startswith("bm.denseio") else "block"
+
+
+def _presentation_assumptions_replacements(
+    *, policy: dict[str, Any], host_shape: str, date_value: str
+) -> dict[str, str]:
+    """Build the values shown on the generated Assumptions & Methodology slide."""
+    def percent(key: str) -> str:
+        try:
+            return f"{float(policy.get(key, 0) or 0):g}%"
+        except (AttributeError, TypeError, ValueError):
+            return "Not provided"
+
+    kind = _presentation_assumptions_slide_kind(host_shape)
+    storage_type = _presentation_storage_type(host_shape)
+    profile = host_shape or "selected OCVS"
+    values = {
+        "data-source-value": (
+            "RVTools export provided by the customer\n"
+            f"(Analysis Date: {date_value})"
+        ),
+        "sizing-approach-value": (
+            f"Selected scope, {profile} OCVS profile, Capacity Policy"
+        ),
+        "vcpu-ocpu-value": _presentation_cpu_contention_ratio(policy),
+        "cpu-headroom-value": percent("cpu_headroom_pct"),
+        "ram-headroom-value": percent("memory_headroom_pct"),
+        "storage-headroom-value": percent("storage_headroom_pct"),
+    }
+    if kind == "vsan":
+        values.update({
+            "vsan-usable-value": percent("dense_vsan_usable_pct"),
+            "storage-architecture-value": "vSAN\n(Applies to BM.DenseIO shapes)",
+        })
+    else:
+        try:
+            performance = f"{float(policy.get('standard_storage_vpu', 0) or 0):g} VPU/GB"
+        except (AttributeError, TypeError, ValueError):
+            performance = "Not provided"
+        values.update({
+            "performance-value": performance,
+            "architecture-value": (
+                f"{storage_type}\n(Applies to BM.Standard and BM.Optimized shapes)"
+            ),
+        })
+    return values
+
+
+def _presentation_native_assumptions_replacements(
+    *, vm_rows: list[dict[str, Any]], source_vcpus: Any, date_value: str
+) -> dict[str, str]:
+    """Build OCI Native methodology values from the active VM-level sizing inputs."""
+
+    def unique_values(key: str, normalizer: Callable[[Any], str] | None = None) -> list[str]:
+        values = {
+            (normalizer(row.get(key)) if normalizer else str(row.get(key) or "").strip())
+            for row in vm_rows
+        }
+        return sorted(value for value in values if value)
+
+    def configured_value(
+        values: list[str], *, singular: Callable[[str], str], multiple: str
+    ) -> str:
+        if len(values) == 1:
+            return singular(values[0])
+        if len(values) > 1:
+            return multiple
+        return "Not provided"
+
+    configured_ocpus = sum(_presentation_decimal(row.get("ocpu")) for row in vm_rows)
+    source_vcpu_value = _presentation_decimal(source_vcpus)
+    if configured_ocpus > 0 and source_vcpu_value > 0:
+        ratio = source_vcpu_value / configured_ocpus
+        ratio_label = f"1 OCPU : {_presentation_number(ratio)} vCPU{'s' if ratio != 1 else ''}"
+        ratio_value = f"{ratio_label}\n(Derived from current OCI Native sizing)"
+    else:
+        ratio_value = "Not provided"
+
+    shapes = unique_values("oci_shape", _presentation_compute_shape_name)
+    ocpus = unique_values("ocpu", lambda value: _presentation_number(_presentation_decimal(value)))
+    bursts = unique_values("burst", normalize_burst_value)
+    licenses = unique_values("os_license")
+    vpus = unique_values("vpu", lambda value: _presentation_number(_presentation_decimal(value)))
+
+    return {
+        "editable-native-assumptions-data-source": (
+            "RVTools export provided by the customer\n"
+            f"(Analysis Date: {date_value})"
+        ),
+        "editable-native-assumptions-sizing-approach": (
+            "Selected VM scope with OCI Native settings configured per VM"
+        ),
+        "editable-native-assumptions-ratio": ratio_value,
+        "editable-native-assumptions-shapes": configured_value(
+            shapes,
+            singular=lambda value: value,
+            multiple="Multiple OCI Compute shapes configured per VM",
+        ),
+        "editable-native-assumptions-ocpu": configured_value(
+            ocpus,
+            singular=lambda value: f"{value} OCPU per VM",
+            multiple="Configured per VM — multiple values",
+        ),
+        "editable-native-assumptions-burst": configured_value(
+            bursts,
+            singular=lambda value: value,
+            multiple="Configured per VM — multiple values",
+        ),
+        "editable-native-assumptions-license": configured_value(
+            licenses,
+            singular=lambda value: value,
+            multiple="Configured per VM — multiple values",
+        ),
+        "editable-native-assumptions-vpu": configured_value(
+            vpus,
+            singular=lambda value: f"{value} VPU/GB",
+            multiple="Configured per VM — multiple VPU tiers",
+        ),
+    }
+
+
+def _presentation_assumptions_slide_part(source: zipfile.ZipFile) -> str | None:
+    """Locate the single existing assumptions slide without relying on its number."""
+    for name in sorted(
+        (item.filename for item in source.infolist()),
+        key=lambda item: int(re.search(r"slide(\d+)\.xml$", item).group(1))
+        if re.search(r"slide(\d+)\.xml$", item) else 0,
+    ):
+        if not re.fullmatch(r"ppt/slides/slide\d+\.xml", name):
+            continue
+        text = source.read(name).decode("utf-8", errors="ignore")
+        if "Assumptions &amp; Methodology" in text or "editable-cpu-contention-ratio" in text:
+            return name
+    return None
+
+
+def _presentation_assumptions_package(
+    *, source: zipfile.ZipFile, host_shape: str
+) -> tuple[str, bytes, str, bytes, dict[str, bytes]] | None:
+    """Return a replacement slide, relationships, and uniquely named media parts."""
+    target_slide = _presentation_assumptions_slide_part(source)
+    asset_path = PRESENTATION_ASSUMPTIONS_SLIDES[_presentation_assumptions_slide_kind(host_shape)]
+    if not target_slide or not asset_path.exists():
+        return None
+
+    target_rel = f"ppt/slides/_rels/{Path(target_slide).name}.rels"
+    target_rel_text = source.read(target_rel).decode("utf-8", errors="ignore")
+    layout_target = re.search(
+        r'<Relationship\b[^>]*Type="[^"]*/slideLayout"[^>]*Target="([^"]+)"',
+        target_rel_text,
+    )
+    layout_path = layout_target.group(1) if layout_target else "/ppt/slideLayouts/slideLayout1.xml"
+
+    kind = _presentation_assumptions_slide_kind(host_shape)
+    with zipfile.ZipFile(asset_path, "r") as assumptions:
+        slide_xml = assumptions.read("ppt/slides/slide1.xml").decode("utf-8")
+        # The DR deck carries its own master footer and logo.  Avoid a second
+        # copy from the imported assumptions slide while preserving the
+        # customer-facing deck branding already present in that template.
+        # In the DR template the assumptions slide is slide 3 and inherits
+        # its own footer/logo from the deck master.
+        if Path(target_slide).name == "slide3.xml":
+            def remove_duplicate_footer_shape(match: re.Match[str]) -> str:
+                shape = match.group(0)
+                return "" if re.search(r'<p:cNvPr\b[^>]*\bname="footer-[^"]*"', shape) else shape
+
+            slide_xml = re.sub(r"<p:sp\b[\s\S]*?</p:sp>", remove_duplicate_footer_shape, slide_xml)
+
+        slide_xml_bytes = slide_xml.encode("utf-8")
+        rel_text = assumptions.read("ppt/slides/_rels/slide1.xml.rels").decode("utf-8")
+        media_parts: dict[str, bytes] = {}
+
+        def replace_relationship(match: re.Match[str]) -> str:
+            relationship = match.group(0)
+            if "/notesSlide" in relationship:
+                return ""
+            if "/slideLayout" in relationship:
+                return re.sub(r'Target="[^"]+"', f'Target="{layout_path}"', relationship)
+            target = re.search(r'Target="([^"]+)"', relationship)
+            if not target or "/ppt/media/" not in target.group(1):
+                return relationship
+            original = target.group(1).split("/")[-1]
+            replacement = f"assumptions-{kind}-{original}"
+            media_parts[f"ppt/media/{replacement}"] = assumptions.read(f"ppt/media/{original}")
+            return relationship.replace(target.group(1), f"/ppt/media/{replacement}")
+
+        rel_text = re.sub(r"<Relationship\b[^>]*/>", replace_relationship, rel_text)
+    return target_slide, slide_xml_bytes, target_rel, rel_text.encode("utf-8"), media_parts
+
+
+def _presentation_variant_slide_package(
+    *,
+    source: zipfile.ZipFile,
+    asset_path: Path,
+    marker: str,
+    namespace: str,
+    asset_marker: str | None = None,
+    target_slide_part: str | None = None,
+) -> tuple[str, bytes, str, bytes, dict[str, bytes]] | None:
+    """Import one editable legacy slide into the matching slot of a generated deck."""
+
+    def find_slide(archive: zipfile.ZipFile) -> str | None:
+        for name in archive.namelist():
+            if not re.fullmatch(r"ppt/slides/slide\d+\.xml", name):
+                continue
+            if marker in archive.read(name).decode("utf-8", errors="ignore"):
+                return name
+        return None
+
+    target_slide = target_slide_part or find_slide(source)
+    if not target_slide or not asset_path.exists():
+        return None
+    target_rel = f"ppt/slides/_rels/{Path(target_slide).name}.rels"
+    target_rel_text = source.read(target_rel).decode("utf-8", errors="ignore")
+    layout_target = re.search(
+        r'<Relationship\b[^>]*Type="[^"]*/slideLayout"[^>]*Target="([^"]+)"',
+        target_rel_text,
+    )
+    layout_path = layout_target.group(1) if layout_target else "/ppt/slideLayouts/slideLayout1.xml"
+
+    with zipfile.ZipFile(asset_path, "r") as variant:
+        original_marker = marker
+        if asset_marker:
+            marker = asset_marker
+        variant_slide = find_slide(variant)
+        marker = original_marker
+        if not variant_slide:
+            return None
+        variant_rel = f"ppt/slides/_rels/{Path(variant_slide).name}.rels"
+        slide_xml = variant.read(variant_slide)
+        rel_text = variant.read(variant_rel).decode("utf-8", errors="ignore")
+        media_parts: dict[str, bytes] = {}
+        safe_namespace = re.sub(r"[^a-z0-9-]+", "-", namespace.lower()).strip("-")
+
+        def replace_relationship(match: re.Match[str]) -> str:
+            relationship = match.group(0)
+            if "/notesSlide" in relationship:
+                return ""
+            if "/slideLayout" in relationship:
+                return re.sub(r'Target="[^"]+"', f'Target="{layout_path}"', relationship)
+            target = re.search(r'Target="([^"]+)"', relationship)
+            if not target or "/ppt/media/" not in target.group(1):
+                return relationship
+            original = target.group(1).split("/")[-1]
+            replacement = f"variant-{safe_namespace}-{original}"
+            media_parts[f"ppt/media/{replacement}"] = variant.read(f"ppt/media/{original}")
+            return relationship.replace(target.group(1), f"/ppt/media/{replacement}")
+
+        rel_text = re.sub(r"<Relationship\b[^>]*/>", replace_relationship, rel_text)
+    return target_slide, slide_xml, target_rel, rel_text.encode("utf-8"), media_parts
+
+
+def _presentation_append_asset_slide(
+    entries: dict[str, bytes],
+    *,
+    asset_path: Path,
+    asset_marker: str,
+    after_marker: str,
+    namespace: str,
+) -> None:
+    """Append one editable asset slide after a named slide in presentation order."""
+    slide_parts = sorted(
+        (name for name in entries if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)),
+        key=lambda name: int(re.search(r"slide(\d+)\.xml$", name).group(1)),
+    )
+    if any(asset_marker in entries[name].decode("utf-8", errors="ignore") for name in slide_parts):
+        return
+    after_slide = next(
+        (name for name in slide_parts if after_marker in entries[name].decode("utf-8", errors="ignore")),
+        None,
+    )
+    if not after_slide or not asset_path.exists():
+        return
+    after_rel = f"ppt/slides/_rels/{Path(after_slide).name}.rels"
+    after_rel_text = entries.get(after_rel, b"").decode("utf-8", errors="ignore")
+    layout_target = re.search(
+        r'<Relationship\b[^>]*Type="[^"]*/slideLayout"[^>]*Target="([^"]+)"',
+        after_rel_text,
+    )
+    layout_path = layout_target.group(1) if layout_target else "../slideLayouts/slideLayout1.xml"
+
+    with zipfile.ZipFile(asset_path, "r") as asset:
+        asset_slide = next(
+            (
+                name for name in asset.namelist()
+                if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)
+                and asset_marker in asset.read(name).decode("utf-8", errors="ignore")
+            ),
+            None,
+        )
+        if not asset_slide:
+            return
+        asset_rel = f"ppt/slides/_rels/{Path(asset_slide).name}.rels"
+        slide_xml = asset.read(asset_slide)
+        rel_text = asset.read(asset_rel).decode("utf-8", errors="ignore")
+        safe_namespace = re.sub(r"[^a-z0-9-]+", "-", namespace.lower()).strip("-")
+
+        def replace_relationship(match: re.Match[str]) -> str:
+            relationship = match.group(0)
+            if "/notesSlide" in relationship:
+                return ""
+            if "/slideLayout" in relationship:
+                return re.sub(r'Target="[^"]+"', f'Target="{layout_path}"', relationship)
+            target = re.search(r'Target="([^"]+)"', relationship)
+            if not target or "/ppt/media/" not in target.group(1):
+                return relationship
+            original = target.group(1).split("/")[-1]
+            replacement = f"inserted-{safe_namespace}-{original}"
+            entries[f"ppt/media/{replacement}"] = asset.read(f"ppt/media/{original}")
+            return relationship.replace(target.group(1), f"/ppt/media/{replacement}")
+
+        rel_text = re.sub(r"<Relationship\b[^>]*/>", replace_relationship, rel_text)
+
+    next_number = max(int(re.search(r"slide(\d+)\.xml$", name).group(1)) for name in slide_parts) + 1
+    new_slide = f"ppt/slides/slide{next_number}.xml"
+    new_rel = f"ppt/slides/_rels/slide{next_number}.xml.rels"
+    entries[new_slide] = slide_xml
+    entries[new_rel] = rel_text.encode("utf-8")
+
+    relationships = entries["ppt/_rels/presentation.xml.rels"].decode("utf-8")
+    used_ids = set(re.findall(r'\bId="([^"]+)"', relationships))
+    suffix = 1
+    relationship_id = f"RmultiClusterPricing{suffix}"
+    while relationship_id in used_ids:
+        suffix += 1
+        relationship_id = f"RmultiClusterPricing{suffix}"
+    relationship_xml = (
+        f'<Relationship Id="{relationship_id}" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" '
+        f'Target="slides/slide{next_number}.xml"/>'
+    )
+    entries["ppt/_rels/presentation.xml.rels"] = relationships.replace(
+        "</Relationships>", f"{relationship_xml}</Relationships>"
+    ).encode("utf-8")
+
+    presentation = entries["ppt/presentation.xml"].decode("utf-8")
+    after_relationship = None
+    for relationship in re.finditer(r'<Relationship\b[^>]*/>', relationships):
+        target = re.search(r'Target="([^"]+)"', relationship.group(0))
+        if target and target.group(1).endswith(Path(after_slide).name):
+            relationship_match = re.search(r'\bId="([^"]+)"', relationship.group(0))
+            after_relationship = relationship_match.group(1) if relationship_match else None
+            break
+    if not after_relationship:
+        return
+    slide_ids = [int(value) for value in re.findall(r'<p:sldId\b[^>]*\bid="(\d+)"', presentation)]
+    new_slide_id = max(slide_ids or [255]) + 1
+    # Some source decks declare the relationships namespace on each slide-id
+    # element instead of on the presentation root.  Keep the inserted element
+    # self-contained so the generated presentation XML remains well formed.
+    new_slide_xml = (
+        f'<p:sldId id="{new_slide_id}" r:id="{relationship_id}" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>'
+    )
+    after_pattern = re.compile(
+        rf'(<p:sldId\b[^>]*\br:id="{re.escape(after_relationship)}"[^>]*/>)'
+    )
+    presentation = after_pattern.sub(rf"\1{new_slide_xml}", presentation, count=1)
+    entries["ppt/presentation.xml"] = presentation.encode("utf-8")
+
+    content_types = entries["[Content_Types].xml"].decode("utf-8")
+    override = (
+        f'<Override PartName="/ppt/slides/slide{next_number}.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>'
+    )
+    entries["[Content_Types].xml"] = content_types.replace(
+        "</Types>", f"{override}</Types>"
+    ).encode("utf-8")
+
+
+def _compact_ocvs_pricing_detail_rows(xml_text: str, row_count: int) -> str:
+    """Remove unused editable cluster rows and move the total band directly below them."""
+    count = max(0, min(6, int(row_count or 0)))
+    for index in range(count + 1, 7):
+        pattern = re.compile(
+            rf"(?:editable-ocvs-)?pricing-detail-row-{index}(?:-.*)?",
+            re.IGNORECASE,
+        )
+
+        def remove_row_shape(match: re.Match[str]) -> str:
+            name = re.search(r'<p:cNvPr\b[^>]*\bname="([^"]*)"', match.group(0))
+            return "" if name and pattern.fullmatch(xml_unescape(name.group(1))) else match.group(0)
+
+        xml_text = re.sub(r"<p:sp\b.*?</p:sp>", remove_row_shape, xml_text, flags=re.DOTALL)
+    delta = (6 - count) * 40 * 9525
+    if delta <= 0:
+        return xml_text
+
+    def shift_or_resize(match: re.Match[str]) -> str:
+        shape = match.group(0)
+        name_match = re.search(r'<p:cNvPr\b[^>]*\bname="([^"]*)"', shape)
+        name = xml_unescape(name_match.group(1)) if name_match else ""
+        if name.startswith("pricing-detail-total-") or name.startswith("editable-ocvs-pricing-detail-total-"):
+            shape = re.sub(
+                r'(<a:off\b[^>]*\by=")(\d+)(")',
+                lambda item: f'{item.group(1)}{max(0, int(item.group(2)) - delta)}{item.group(3)}',
+                shape,
+                count=1,
+            )
+        if name == "pricing-detail-table-outline":
+            shape = re.sub(
+                r'(<a:ext\b[^>]*\bcy=")(\d+)(")',
+                lambda item: f'{item.group(1)}{max(1, int(item.group(2)) - delta)}{item.group(3)}',
+                shape,
+                count=1,
+            )
+        return shape
+
+    return re.sub(r"<p:sp\b.*?</p:sp>", shift_or_resize, xml_text, flags=re.DOTALL)
+
+
 def build_customer_presentation_pptx(
     *, template_path: Path, output_path: Path, customer_name: str, business_scenario: dict[str, Any],
     analysis: dict[str, Any], ocvs_price: dict[str, Any], generated_at: str,
     native_vm_rows: list[dict[str, Any]] | None = None,
+    pricing_currency: str = "USD",
 ) -> None:
     """Fill the imported editable OCVS template with VMware2OCI assessment results."""
     workload = analysis.get("workload_summary", {})
@@ -7140,6 +8745,14 @@ def build_customer_presentation_pptx(
     hybrid_native = analysis.get("supported_native_summary", {})
     scenario_id = str(business_scenario.get("id") or "")
     is_hybrid = scenario_id == "hybrid"
+    is_compute_template = (
+        not is_hybrid and template_path.name == "OCI Compute Migration.pptx"
+    )
+    is_ocvs_pricing_template = template_path.name in {
+        "Oracle Cloud VMware Solution.pptx",
+        "Capacity Expansion with OCVS.pptx",
+        "Disaster Recovery.pptx",
+    }
     selected_summary = selected_hybrid_ocvs if is_hybrid else selected_ocvs
     policy_source = hybrid_ocvs if is_hybrid else ocvs_price
     policy = policy_source.get("policy", {}) if isinstance(policy_source, dict) else {}
@@ -7164,8 +8777,53 @@ def build_customer_presentation_pptx(
         else list(native_vm_rows or [])
     )
     shape_mix, vpu_mix, native_totals = _presentation_native_mix_rows(native_rows)
-    visible_shape_mix = _presentation_limit_mix_rows(shape_mix, kind="shape")
-    visible_vpu_mix = _presentation_limit_mix_rows(vpu_mix, kind="vpu")
+    # The refreshed OCI Compute summary slide exposes five editable rows.  The
+    # older Hybrid template remains a three-row layout.
+    native_mix_row_limit = 3 if is_hybrid else 4
+    visible_shape_mix = _presentation_limit_mix_rows(
+        shape_mix, kind="shape", max_rows=native_mix_row_limit
+    )
+    visible_vpu_mix = _presentation_limit_mix_rows(
+        vpu_mix, kind="vpu", max_rows=native_mix_row_limit
+    )
+    source_cluster_rows = list(analysis.get("source_cluster_summaries") or [])
+    source_cluster_mode = analysis.get("sizing_scope_mode") == "source_cluster"
+    use_cluster_aware_current_slide = source_cluster_mode and len(source_cluster_rows) > 1
+    if not source_cluster_mode or not source_cluster_rows:
+        source_cluster_rows = [
+            {
+                "name": "Consolidated environment",
+                "selected_vm_count": workload.get("vm_count", 0),
+                "vcpus": workload.get("total_vcpus", 0),
+                "memory_gb": workload.get("total_memory_gb", 0),
+                "storage_gb": workload.get("total_storage_gb", 0),
+            }
+        ]
+    source_cluster_rows = source_cluster_rows[:6]
+    multi_summary = analysis.get("hybrid_ocvs_multi_cluster") if is_hybrid else analysis.get("ocvs_multi_cluster")
+    use_multi_cluster_summary_slide = (
+        isinstance(multi_summary, dict)
+        and multi_summary.get("topology") == "multi"
+        and bool(multi_summary.get("clusters"))
+    )
+    target_cluster_rows = list(multi_summary.get("clusters") or []) if isinstance(multi_summary, dict) else []
+    if not target_cluster_rows:
+        target_cluster_rows = [
+            {
+                "name": "Production",
+                "vm_count": workload.get("vm_count", 0),
+                "selected": selected_summary,
+                "totals": ocvs_totals,
+                "storage_architecture": storage_type,
+            }
+        ]
+    target_cluster_rows = target_cluster_rows[:6]
+    architecture_sddcs = int(multi_summary.get("sddc_count", 1) or 0) if isinstance(multi_summary, dict) else (1 if selected_summary else 0)
+    architecture_clusters = int(multi_summary.get("cluster_count", 1) or 0) if isinstance(multi_summary, dict) else 1
+    architecture_hosts = int(multi_summary.get("total_hosts", selected_summary.get("host_count", 0)) or 0) if isinstance(multi_summary, dict) else int(selected_summary.get("host_count", 0) or 0)
+    architecture_storage_gb = float(multi_summary.get("total_storage_gb", ocvs_totals.get("storage_gb", storage_gb)) or 0) if isinstance(multi_summary, dict) else float(ocvs_totals.get("storage_gb", storage_gb) or 0)
+    architecture_types = sorted({str(row.get("storage_architecture") or storage_type) for row in target_cluster_rows})
+    architecture_storage_type = architecture_types[0] if len(architecture_types) == 1 else "Mixed vSAN / OCI Block Volume"
 
     def mix_value(rows: list[dict[str, Any]], index: int, key: str) -> Any:
         return rows[index].get(key, "") if index < len(rows) else ""
@@ -7182,7 +8840,11 @@ def build_customer_presentation_pptx(
         "editable-customer-value": customer_name or "Not provided",
         "editable-date-value": date_value,
         "editable-prepared-by-value": f"VMware to OCI Assessment — {business_scenario.get('name') or 'Assessment'}",
-        "editable-current-datacenter": f"Datacenter 1 – {customer_name or 'Not provided'}",
+        "editable-current-datacenter": (
+            str(source_cluster_rows[0].get("name") or "Selected source cluster")
+            if source_cluster_mode and len(source_cluster_rows) == 1
+            else f"Datacenter 1 – {customer_name or 'Not provided'}"
+        ),
         "editable-current-vms": _presentation_number(workload.get("vm_count")),
         "editable-current-powered-on": _presentation_number(workload.get("powered_on_count")),
         "editable-current-powered-off": _presentation_number(workload.get("powered_off_count")),
@@ -7201,12 +8863,12 @@ def build_customer_presentation_pptx(
         "editable-methodology-storage-type": storage_type,
         "editable-analysis-day": datetime.fromisoformat(generated_at).strftime("%d"),
         "editable-analysis-year": datetime.fromisoformat(generated_at).strftime("%Y"),
-        "editable-ocvs-sddcs": "1" if selected_summary else "0",
-        "editable-ocvs-clusters": _presentation_number(selected_summary.get("cluster_count")),
-        "editable-ocvs-hosts": host_count,
+        "editable-ocvs-sddcs": _presentation_number(architecture_sddcs),
+        "editable-ocvs-clusters": _presentation_number(architecture_clusters),
+        "editable-ocvs-hosts": _presentation_number(architecture_hosts),
         "editable-ocvs-shape": host_shape,
-        "editable-ocvs-storage": infrastructure_storage,
-        "editable-ocvs-storage-type": storage_type,
+        "editable-ocvs-storage": _presentation_tb_number(architecture_storage_gb),
+        "editable-ocvs-storage-type": architecture_storage_type,
         "editable-production-hosts": host_count,
         "editable-production-shape": host_shape,
         "editable-ocvs-production-hosts": host_count,
@@ -7223,7 +8885,71 @@ def build_customer_presentation_pptx(
         "editable-native-total-vpus": _presentation_number(native_totals["vpus"] or native_summary.get("total_vpus")),
         "editable-native-total-storage": _presentation_tb_number(native_totals["storage_gb"] or native_summary.get("total_provisioned_gb")),
     }
-    for row_index in range(3):
+    for index in range(6):
+        display = index + 1
+        source = source_cluster_rows[index] if index < len(source_cluster_rows) else {}
+        replacements.update(
+            {
+                f"editable-source-cluster-name-row-{display}": str(source.get("name") or ""),
+                f"editable-source-cluster-vms-row-{display}": _presentation_number(source.get("selected_vm_count", 0)) if source else "",
+                f"editable-source-cluster-vcpus-row-{display}": _presentation_number(source.get("vcpus", 0)) if source else "",
+                f"editable-source-cluster-vram-row-{display}": _presentation_number(source.get("memory_gb", 0)) if source else "",
+                f"editable-source-cluster-storage-row-{display}": _presentation_tb_number(source.get("storage_gb", 0)) if source else "",
+            }
+        )
+        cluster = target_cluster_rows[index] if index < len(target_cluster_rows) else {}
+        selected_cluster = cluster.get("selected") if isinstance(cluster.get("selected"), dict) else {}
+        cluster_totals = cluster.get("totals") if isinstance(cluster.get("totals"), dict) else {}
+        replacements.update(
+            {
+                f"editable-ocvs-cluster-name-row-{display}": str(cluster.get("name") or ""),
+                f"editable-ocvs-cluster-workload-row-{display}": f"{_presentation_number(cluster.get('vm_count', 0))} VMs" if cluster else "",
+                f"editable-ocvs-cluster-hosts-row-{display}": _presentation_number(selected_cluster.get("host_count", 0)) if cluster else "",
+                f"editable-ocvs-cluster-shape-row-{display}": str(selected_cluster.get("shape") or ""),
+                f"editable-ocvs-cluster-storage-row-{display}": f"{_presentation_tb_number(cluster_totals.get('storage_gb', 0))} TB" if cluster else "",
+                f"editable-ocvs-cluster-architecture-row-{display}": str(cluster.get("storage_architecture") or _presentation_storage_type(selected_cluster.get("shape"))) if cluster else "",
+            }
+        )
+    if is_compute_template:
+        replacements.update(
+            _presentation_native_assumptions_replacements(
+                vm_rows=native_rows,
+                source_vcpus=workload.get("total_vcpus"),
+                date_value=date_value,
+            )
+        )
+    else:
+        replacements.update(
+            _presentation_assumptions_replacements(
+                policy=policy, host_shape=host_shape, date_value=date_value
+            )
+        )
+    if is_ocvs_pricing_template:
+        replacements.update(
+            _presentation_ocvs_multi_pricing_replacements(multi_summary, pricing_currency)
+            if use_multi_cluster_summary_slide and template_path.name == "Oracle Cloud VMware Solution.pptx"
+            else _presentation_ocvs_pricing_replacements(selected_summary, pricing_currency)
+        )
+    if is_compute_template:
+        replacements.update(
+            _presentation_native_pricing_replacements(
+                overall_native, pricing_currency
+            )
+        )
+    if is_hybrid:
+        replacements.update(
+            _presentation_hybrid_pricing_replacements(
+                native_summary=hybrid_native,
+                selected_ocvs=selected_hybrid_ocvs,
+                pricing_currency=pricing_currency,
+                ocvs_multi_cluster=multi_summary if use_multi_cluster_summary_slide else None,
+            )
+        )
+    if use_multi_cluster_summary_slide:
+        replacements.update(
+            _presentation_ocvs_pricing_detail_replacements(multi_summary, pricing_currency)
+        )
+    for row_index in range(native_mix_row_limit):
         display_row = row_index + 1
         replacements.update({
             f"editable-native-shape-row-{display_row}": str(mix_value(visible_shape_mix, row_index, "shape")),
@@ -7231,6 +8957,8 @@ def build_customer_presentation_pptx(
             f"editable-native-shape-ocpus-row-{display_row}": mix_number(visible_shape_mix, row_index, "ocpus"),
             f"editable-native-shape-ram-row-{display_row}": mix_number(visible_shape_mix, row_index, "ram_gb"),
             f"editable-native-vpu-label-row-{display_row}": str(mix_value(visible_vpu_mix, row_index, "vpu")),
+            f"editable-native-vpu-tier-row-{display_row}": str(mix_value(visible_vpu_mix, row_index, "tier")),
+            f"editable-native-vpu-per-vm-row-{display_row}": mix_number(visible_vpu_mix, row_index, "vpu"),
             f"editable-native-vpu-vms-row-{display_row}": mix_number(visible_vpu_mix, row_index, "vms"),
             f"editable-native-vpu-total-row-{display_row}": mix_number(visible_vpu_mix, row_index, "total_vpu"),
             f"editable-native-vpu-storage-row-{display_row}": mix_tb(visible_vpu_mix, row_index, "storage_gb"),
@@ -7252,14 +8980,125 @@ def build_customer_presentation_pptx(
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(template_path, "r") as source, zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as target:
+        assumptions_package = (
+            None
+            if is_compute_template
+            else _presentation_assumptions_package(source=source, host_shape=host_shape)
+        )
+        replacement_packages = [assumptions_package] if assumptions_package else []
+        single_cluster_asset = PRESENTATION_SINGLE_CLUSTER_VARIANTS_DIR / template_path.name
+        if not use_cluster_aware_current_slide and single_cluster_asset.exists():
+            package = _presentation_variant_slide_package(
+                source=source,
+                asset_path=single_cluster_asset,
+                marker="Current Environment",
+                namespace=f"{template_path.stem}-current",
+            )
+            if package:
+                replacement_packages.append(package)
+        if not use_multi_cluster_summary_slide and single_cluster_asset.exists():
+            package = _presentation_variant_slide_package(
+                source=source,
+                asset_path=single_cluster_asset,
+                marker="Infrastructure Sizing Summary",
+                namespace=f"{template_path.stem}-summary",
+            )
+            if package:
+                replacement_packages.append(package)
+        if (
+            use_multi_cluster_summary_slide
+            and template_path.name == "Oracle Cloud VMware Solution.pptx"
+        ):
+            package = _presentation_variant_slide_package(
+                source=source,
+                asset_path=PRESENTATION_MULTI_CLUSTER_PRICING_SUMMARY,
+                marker="OCVS Pricing Summary",
+                asset_marker="OCVS Multi-Cluster Pricing Summary",
+                namespace="ocvs-multi-cluster-pricing-summary",
+            )
+            if package:
+                replacement_packages.append(package)
+            slide_parts = sorted(
+                (name for name in source.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)),
+                key=lambda name: int(re.search(r"slide(\d+)\.xml$", name).group(1)),
+            )
+            if slide_parts:
+                package = _presentation_variant_slide_package(
+                    source=source,
+                    asset_path=PRESENTATION_MULTI_CLUSTER_PRICING_DETAIL,
+                    marker="OCVS Pricing Detail by Target Cluster",
+                    asset_marker="OCVS Pricing Detail by Target Cluster",
+                    target_slide_part=slide_parts[-1],
+                    namespace="ocvs-multi-cluster-pricing-detail",
+                )
+                if package:
+                    replacement_packages.append(package)
+        replacement_slides = {package[0]: package[1] for package in replacement_packages}
+        replacement_rels = {package[2]: package[3] for package in replacement_packages}
+        replacement_media: dict[str, bytes] = {}
+        for package in replacement_packages:
+            replacement_media.update(package[4])
+        archive_entries: dict[str, bytes] = {}
+        archive_infos = {item.filename: item for item in source.infolist()}
         for item in source.infolist():
-            data = source.read(item.filename)
-            if item.filename.endswith(".xml") or item.filename.endswith(".rels"):
+            if item.filename in replacement_slides:
+                data = replacement_slides[item.filename]
+            elif item.filename in replacement_rels:
+                data = replacement_rels[item.filename]
+            else:
+                data = source.read(item.filename)
+            archive_entries[item.filename] = data
+        for media_path, media_data in replacement_media.items():
+            archive_entries[media_path] = media_data
+
+        if use_multi_cluster_summary_slide and is_hybrid:
+            _presentation_append_asset_slide(
+                archive_entries,
+                asset_path=PRESENTATION_MULTI_CLUSTER_PRICING_DETAIL,
+                asset_marker="OCVS Pricing Detail by Target Cluster",
+                after_marker="Hybrid Pricing Summary",
+                namespace="hybrid-ocvs-multi-cluster-pricing-detail",
+            )
+
+        for filename, original_data in list(archive_entries.items()):
+            data = original_data
+            if filename.endswith(".xml") or filename.endswith(".rels"):
                 text = data.decode("utf-8", errors="ignore")
                 for key, value in tokens.items():
                     text = text.replace(f"{{{{{key}}}}}", xml_escape(value))
-                data = _replace_presentation_named_text(text, replacements).encode("utf-8")
-            target.writestr(item, data)
+                if source_cluster_mode and len(source_cluster_rows) == 1:
+                    text = text.replace("Total Environment", "Selected Cluster Scope")
+                elif not source_cluster_mode:
+                    text = text.replace("Total Environment", "Consolidated Selected Workloads")
+                text = _replace_presentation_named_text(text, replacements)
+                if (
+                    not is_hybrid
+                    and template_path.name == "OCI Compute Migration.pptx"
+                ):
+                    text = _compact_compute_summary_rows(
+                        text,
+                        compute_row_count=len(visible_shape_mix),
+                        storage_row_count=len(visible_vpu_mix),
+                    )
+                if template_path.name in {
+                    "Oracle Cloud VMware Solution.pptx",
+                    "Capacity Expansion with OCVS.pptx",
+                    "Disaster Recovery.pptx",
+                    "OCI Hybrid.pptx",
+                }:
+                    text = _compact_cluster_aware_rows(
+                        text,
+                        source_cluster_count=len(source_cluster_rows),
+                        target_cluster_count=len(target_cluster_rows),
+                    )
+                if "OCVS Pricing Detail by Target Cluster" in text:
+                    text = _compact_ocvs_pricing_detail_rows(
+                        text, len(target_cluster_rows)
+                    )
+                data = text.encode("utf-8")
+            archive_entries[filename] = data
+        for filename, data in archive_entries.items():
+            target.writestr(archive_infos.get(filename, filename), data)
 
 
 def _xlsx_currency_format_code(currency_code: str) -> str:
@@ -9886,6 +11725,15 @@ def step3() -> str:
     if not isinstance(selected_vm_names, list):
         selected_vm_names = []
     selected_vm_names = [n for n in selected_vm_names if n in vm_index]
+    sizing_scope_mode = normalize_sizing_scope_mode(app_state.get("sizing_scope_mode"))
+    available_source_clusters = sorted(
+        {str(vm.get("source_cluster") or "Unassigned source cluster") for vm in all_vms},
+        key=lambda value: (value == "Unassigned source cluster", value.lower()),
+    )
+    selected_source_clusters = [
+        str(value) for value in app_state.get("selected_source_clusters", [])
+        if str(value) in available_source_clusters
+    ]
     supported_signatures = load_supported_os_signatures()
     inventory_issues = build_inventory_review_issues(all_vms)
     advisory_issue_ids = [
@@ -9910,6 +11758,24 @@ def step3() -> str:
             submitted_name_set = set(submitted_names)
             invalid_names = sorted({name for name in submitted_names if name not in vm_index})
             candidate_names = [str(vm["name"]) for vm in all_vms if str(vm["name"]) in submitted_name_set]
+            candidate_scope_mode = normalize_sizing_scope_mode(request.form.get("sizing_scope_mode"))
+            submitted_source_clusters = list(dict.fromkeys(request.form.getlist("selected_source_clusters")))
+            invalid_source_clusters = sorted(
+                {name for name in submitted_source_clusters if name not in available_source_clusters}
+            )
+            candidate_source_clusters = [
+                name for name in available_source_clusters if name in set(submitted_source_clusters)
+            ]
+            if candidate_scope_mode == "source_cluster":
+                if invalid_source_clusters:
+                    inventory_errors.append("Some selected source clusters are no longer present in the inventory.")
+                if not candidate_source_clusters:
+                    inventory_errors.append("Select at least one source cluster for cluster-based sizing.")
+                candidate_names = [
+                    str(vm["name"])
+                    for vm in all_vms
+                    if str(vm.get("source_cluster") or "Unassigned source cluster") in set(candidate_source_clusters)
+                ]
 
             if invalid_names:
                 inventory_errors.append(
@@ -9943,6 +11809,8 @@ def step3() -> str:
             ]
             candidate_state = copy.deepcopy(app_state)
             candidate_state["selected_vm_names"] = candidate_names
+            candidate_state["sizing_scope_mode"] = candidate_scope_mode
+            candidate_state["selected_source_clusters"] = candidate_source_clusters
             candidate_state["step4_hybrid_placements"] = candidate_placements
             candidate_state["acknowledged_warning_ids"] = acknowledged_warning_ids
             continue_to_scenarios = request.form.get("continue_to_scenarios") == "1"
@@ -9957,6 +11825,8 @@ def step3() -> str:
                 else:
                     app_state = candidate_state
                     selected_vm_names = candidate_names
+                    sizing_scope_mode = candidate_scope_mode
+                    selected_source_clusters = candidate_source_clusters
                     if continue_to_scenarios:
                         readiness_errors = inventory_review_readiness_errors(
                             all_vms,
@@ -10165,6 +12035,7 @@ def step3() -> str:
         "review_count": len(review_vm_names),
     }
     selected_inventory_rows = [row for row in inventory_rows if row["included"]]
+    source_cluster_summaries = build_source_cluster_summaries(all_vms, selected_vm_names)
     selected_memory_mb = sum(_to_number(row.get("memory_mb")) for row in selected_inventory_rows)
     selected_storage_mib = sum(_to_number(row.get("provisioned_mib")) for row in selected_inventory_rows)
     selected_storage_gb = int(math.ceil(selected_storage_mib / 1024.0)) if selected_storage_mib else 0
@@ -10214,6 +12085,9 @@ def step3() -> str:
             inventory_rows=inventory_rows,
             inventory_summary=inventory_summary,
             selected_inventory_summary=selected_inventory_summary,
+            sizing_scope_mode=sizing_scope_mode,
+            source_cluster_summaries=source_cluster_summaries,
+            selected_source_clusters=selected_source_clusters,
             inventory_issues=inventory_issues,
             inventory_errors=inventory_errors,
             acknowledged_warning_ids=acknowledged_warning_ids,
@@ -10272,6 +12146,21 @@ def step4() -> str:
     selected_vm_names = app_state.get("selected_vm_names", [])
     if not isinstance(selected_vm_names, list):
         selected_vm_names = []
+    selected_source_cluster_names = sorted(
+        {
+            str(vm_index[name].get("source_cluster") or "Unassigned source cluster")
+            for name in selected_vm_names
+            if name in vm_index
+        }
+    )
+    ocvs_topology = normalize_ocvs_topology(app_state.get("step4_ocvs_topology"))
+    ocvs_target_clusters = normalize_ocvs_target_clusters(
+        app_state.get("step4_ocvs_target_clusters"), selected_source_cluster_names
+    )
+    hybrid_ocvs_topology = normalize_ocvs_topology(app_state.get("step4_hybrid_ocvs_topology"))
+    hybrid_ocvs_target_clusters = normalize_ocvs_target_clusters(
+        app_state.get("step4_hybrid_ocvs_target_clusters"), selected_source_cluster_names
+    )
     inventory_issues = build_inventory_review_issues(all_vms)
     boundary_errors = inventory_review_readiness_errors(
         all_vms,
@@ -10335,6 +12224,16 @@ def step4() -> str:
         if ocvs_only and posted_scenario != "price":
             posted_scenario = "ocvs"
             submitted_step4_scalars["active_scenario"] = "ocvs"
+        topology_errors: list[str] = []
+        if posted_scenario == "ocvs" and "ocvs_topology" in request.form:
+            ocvs_topology, ocvs_target_clusters, topology_errors = parse_ocvs_target_cluster_form(
+                request.form, "ocvs", selected_source_cluster_names
+            )
+        elif posted_scenario == "hybrid" and "hybrid_ocvs_topology" in request.form:
+            hybrid_ocvs_topology, hybrid_ocvs_target_clusters, topology_errors = parse_ocvs_target_cluster_form(
+                request.form, "hybrid_ocvs", selected_source_cluster_names
+            )
+        scalar_errors.extend(topology_errors)
         if scalar_errors:
             session[STEP4_UNSAVED_READINESS_SESSION_KEY] = True
             flash(
@@ -10488,6 +12387,16 @@ def step4() -> str:
         restored_hybrid_ocvs_dr_nodes = normalize_ocvs_dr_nodes(
             snapshot.get("hybrid_ocvs_dr_nodes", hybrid_ocvs_dr_nodes)
         )
+        restored_ocvs_topology = normalize_ocvs_topology(snapshot.get("ocvs_topology", ocvs_topology))
+        restored_ocvs_targets = normalize_ocvs_target_clusters(
+            snapshot.get("ocvs_target_clusters", ocvs_target_clusters), selected_source_cluster_names
+        )
+        restored_hybrid_topology = normalize_ocvs_topology(
+            snapshot.get("hybrid_ocvs_topology", hybrid_ocvs_topology)
+        )
+        restored_hybrid_targets = normalize_ocvs_target_clusters(
+            snapshot.get("hybrid_ocvs_target_clusters", hybrid_ocvs_target_clusters), selected_source_cluster_names
+        )
 
         for vm_name, cfg in snapshot_settings.items():
             if vm_name not in vm_index or not isinstance(cfg, dict):
@@ -10537,6 +12446,10 @@ def step4() -> str:
         hybrid_ocvs_commitment_term = restored_hybrid_ocvs_commitment_term
         hybrid_vmware_license_price_per_core_yearly = restored_hybrid_vmware_license_price
         hybrid_ocvs_dr_nodes = restored_hybrid_ocvs_dr_nodes
+        ocvs_topology = restored_ocvs_topology
+        ocvs_target_clusters = restored_ocvs_targets
+        hybrid_ocvs_topology = restored_hybrid_topology
+        hybrid_ocvs_target_clusters = restored_hybrid_targets
 
         app_state["step4_vm_shapes"] = vm_shape_selection
         app_state["step4_vm_ocpus"] = vm_ocpu_selection
@@ -10554,10 +12467,32 @@ def step4() -> str:
         app_state["step4_hybrid_ocvs_commitment_term"] = hybrid_ocvs_commitment_term
         app_state["step4_hybrid_vmware_license_price_per_core_yearly"] = hybrid_vmware_license_price_per_core_yearly
         app_state["step4_hybrid_ocvs_dr_nodes"] = hybrid_ocvs_dr_nodes
+        app_state["step4_ocvs_topology"] = ocvs_topology
+        app_state["step4_ocvs_target_clusters"] = ocvs_target_clusters
+        app_state["step4_hybrid_ocvs_topology"] = hybrid_ocvs_topology
+        app_state["step4_hybrid_ocvs_target_clusters"] = hybrid_ocvs_target_clusters
+        app_state["step4_ocvs_topology"] = ocvs_topology
+        app_state["step4_ocvs_target_clusters"] = ocvs_target_clusters
+        app_state["step4_hybrid_ocvs_topology"] = hybrid_ocvs_topology
+        app_state["step4_hybrid_ocvs_target_clusters"] = hybrid_ocvs_target_clusters
         if snapshot.get("saved_at") and not app_state.get("step4_last_updated_at"):
             app_state["step4_last_updated_at"] = str(snapshot.get("saved_at"))
         if request.method == "GET":
             save_app_state(app_state)
+
+    # The snapshot is the baseline for a POST, but the topology submitted by
+    # the user is the source of truth for this request.  Re-apply the already
+    # validated topology after restoring the snapshot so an older saved
+    # single-cluster setting cannot overwrite a new multi-cluster submission.
+    if request.method == "POST":
+        if posted_scenario == "ocvs" and "ocvs_topology" in request.form:
+            ocvs_topology, ocvs_target_clusters, _ = parse_ocvs_target_cluster_form(
+                request.form, "ocvs", selected_source_cluster_names
+            )
+        elif posted_scenario == "hybrid" and "hybrid_ocvs_topology" in request.form:
+            hybrid_ocvs_topology, hybrid_ocvs_target_clusters, _ = parse_ocvs_target_cluster_form(
+                request.form, "hybrid_ocvs", selected_source_cluster_names
+            )
 
     selected_vms = [vm_index[name] for name in selected_vm_names if name in vm_index]
     if not selected_vms:
@@ -10923,6 +12858,10 @@ def step4() -> str:
         app_state["step4_hybrid_ocvs_commitment_term"] = hybrid_ocvs_commitment_term
         app_state["step4_hybrid_vmware_license_price_per_core_yearly"] = hybrid_vmware_license_price_per_core_yearly
         app_state["step4_hybrid_ocvs_dr_nodes"] = hybrid_ocvs_dr_nodes
+        app_state["step4_ocvs_topology"] = ocvs_topology
+        app_state["step4_ocvs_target_clusters"] = ocvs_target_clusters
+        app_state["step4_hybrid_ocvs_topology"] = hybrid_ocvs_topology
+        app_state["step4_hybrid_ocvs_target_clusters"] = hybrid_ocvs_target_clusters
         step4_last_updated_at = datetime.now().isoformat(timespec="seconds")
         app_state["step4_last_updated_at"] = step4_last_updated_at
         staged_step4_snapshot: dict[str, Any] | None = None
@@ -10989,6 +12928,10 @@ def step4() -> str:
                 "hybrid_ocvs_commitment_term": hybrid_ocvs_commitment_term,
                 "hybrid_ocvs_dr_nodes": hybrid_ocvs_dr_nodes,
                 "hybrid_vmware_license_price_per_core_yearly": hybrid_vmware_license_price_per_core_yearly,
+                "ocvs_topology": ocvs_topology,
+                "ocvs_target_clusters": ocvs_target_clusters,
+                "hybrid_ocvs_topology": hybrid_ocvs_topology,
+                "hybrid_ocvs_target_clusters": hybrid_ocvs_target_clusters,
                 "vm_settings": all_vm_settings,
             }
 
@@ -11028,6 +12971,10 @@ def step4() -> str:
             export_format = "excel"
         elif action == "generate_presentation":
             export_format = "presentation"
+        elif action == "export_migration_json":
+            export_format = "migration_json"
+        elif action == "export_migration_csv":
+            export_format = "migration_csv"
         elif action == "save":
             flash("Migration path settings saved.", "success")
             if continue_to_results:
@@ -11086,6 +13033,45 @@ def step4() -> str:
         hybrid_ocvs_commitment_term=hybrid_ocvs_commitment_term,
         hybrid_placement_selection=hybrid_placement_selection,
     )
+    source_cluster_summaries = build_source_cluster_summaries(vm_rows, selected_vm_names)
+    ocvs_multi_cluster = None
+    if ocvs_topology == "multi":
+        ocvs_multi_cluster = build_ocvs_multi_cluster_summary(
+            vm_rows, ocvs_target_clusters,
+            price_lookup=price_lookup,
+            block_storage_unit_price=block_storage_unit_price,
+            block_perf_unit_price=block_perf_unit_price,
+            iaas_discount_pct=iaas_discount_pct,
+            policy=ocvs_policy,
+            default_profile=ocvs_profile_choice,
+            dr_node_count=ocvs_dr_nodes,
+            vmware_license_price_per_core_yearly=vmware_license_price_per_core_yearly,
+            ocvs_commitment_term=ocvs_commitment_term,
+        )
+    hybrid_ocvs_multi_cluster = None
+    if hybrid_ocvs_topology == "multi":
+        hybrid_ocvs_multi_cluster = build_ocvs_multi_cluster_summary(
+            list(analysis.get("unsupported_ocvs_rows") or []), hybrid_ocvs_target_clusters,
+            price_lookup=price_lookup,
+            block_storage_unit_price=block_storage_unit_price,
+            block_perf_unit_price=block_perf_unit_price,
+            iaas_discount_pct=iaas_discount_pct,
+            policy=hybrid_ocvs_policy,
+            default_profile=hybrid_ocvs_profile_choice,
+            dr_node_count=hybrid_ocvs_dr_nodes,
+            vmware_license_price_per_core_yearly=hybrid_vmware_license_price_per_core_yearly,
+            ocvs_commitment_term=hybrid_ocvs_commitment_term,
+        )
+    analysis.update(
+        {
+            "source_cluster_summaries": source_cluster_summaries,
+            "sizing_scope_mode": normalize_sizing_scope_mode(app_state.get("sizing_scope_mode")),
+            "ocvs_topology": ocvs_topology,
+            "ocvs_multi_cluster": ocvs_multi_cluster,
+            "hybrid_ocvs_topology": hybrid_ocvs_topology,
+            "hybrid_ocvs_multi_cluster": hybrid_ocvs_multi_cluster,
+        }
+    )
     overall = analysis["overall"]
     ocvs_price = analysis["ocvs_price"]
     hybrid_ocvs_price = analysis["hybrid_ocvs_price"]
@@ -11114,6 +13100,12 @@ def step4() -> str:
         supported_native_rows=analysis["supported_native_rows"],
         unsupported_ocvs_rows=analysis["unsupported_ocvs_rows"],
     )
+    migration_plan_records = build_migration_plan_records(
+        vm_rows,
+        analysis.get("hybrid_placement_plan") or {},
+        ocvs_multi_cluster,
+    )
+    analysis["migration_plan_records"] = migration_plan_records
 
     if request.method == "GET":
         has_unsaved_scenario_changes = bool(
@@ -11145,6 +13137,34 @@ def step4() -> str:
         },
     )
 
+    if export_format in {"migration_json", "migration_csv"}:
+        generated_at = datetime.now().isoformat(timespec="seconds")
+        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        if export_format == "migration_json":
+            filename = build_export_filename(customer_name, "migration_plan", "json")
+            payload = {
+                "schema": "vmware-to-oci-migration-plan/v1",
+                "generated_at": generated_at,
+                "customer_name": customer_name,
+                "records": migration_plan_records,
+                "adapter_contracts": ["rackware", "matilda", "vendor-neutral-csv"],
+            }
+            content = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+            mimetype = "application/json"
+        else:
+            filename = build_export_filename(customer_name, "migration_plan", "csv")
+            buffer = io.StringIO()
+            fieldnames = list(migration_plan_records[0]) if migration_plan_records else [
+                "vm_name", "source_cluster", "target_platform", "target_cluster", "suggested_wave", "validation_status", "cutover_status"
+            ]
+            writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(migration_plan_records)
+            content = buffer.getvalue().encode("utf-8-sig")
+            mimetype = "text/csv"
+        export_path = EXPORTS_DIR / filename
+        export_path.write_bytes(content)
+        return send_file(export_path, as_attachment=True, download_name=filename, mimetype=mimetype, max_age=0)
     if export_format == "excel":
         generated_at = datetime.now().isoformat(timespec="seconds")
         filename = build_export_filename(customer_name, "migration_price_comparison", "xlsx")
@@ -11233,6 +13253,7 @@ def step4() -> str:
             ocvs_price=ocvs_price,
             generated_at=generated_at,
             native_vm_rows=vm_rows,
+            pricing_currency=pricing_currency,
         )
         session["last_presentation_file"] = str(export_path.resolve())
         return send_file(
@@ -11287,8 +13308,12 @@ def step4() -> str:
     if ocvs_only:
         results["scenarios"] = [scenario for scenario in results["scenarios"] if scenario["id"] == "ocvs"]
         if results["scenarios"]:
-            results["scenarios"][0]["title"] = str(scenario_ui["results_title"])
-            results["scenarios"][0]["intro"] = str(scenario_ui["results_intro"])
+            if results["scenarios"][0].get("multi_cluster"):
+                results["scenarios"][0]["title"] = "Multi-cluster OCVS migration results"
+                results["scenarios"][0]["intro"] = "Review multi-cluster sizing, pricing completeness, and readiness before recording the specialist decision."
+            else:
+                results["scenarios"][0]["title"] = str(scenario_ui["results_title"])
+                results["scenarios"][0]["intro"] = str(scenario_ui["results_intro"])
             results["scenarios"][0]["price_rank"] = 1
         results["recommendation_options"] = [{"value": "ocvs", "label": "OCVS"}]
         results["recommendation"] = "ocvs"
@@ -11320,6 +13345,7 @@ def step4() -> str:
             windows_os_unit_price=windows_os_unit_price,
             iaas_discount_pct=iaas_discount_pct,
             ocvs_price=ocvs_price,
+            format_storage_gb_and_tb=format_storage_gb_and_tb,
             hybrid_ocvs_price=hybrid_ocvs_price,
             ocvs_profiles=OCVS_HOST_PROFILES,
             ocvs_profile_choice=ocvs_profile_choice,
@@ -11337,6 +13363,14 @@ def step4() -> str:
             hybrid_ocvs_policy=hybrid_ocvs_policy,
             hybrid_ocvs_dr_nodes=hybrid_ocvs_dr_nodes,
             hybrid_vmware_license_price_per_core_yearly=hybrid_vmware_license_price_per_core_yearly,
+            source_cluster_summaries=source_cluster_summaries,
+            selected_source_cluster_names=selected_source_cluster_names,
+            ocvs_topology=ocvs_topology,
+            ocvs_target_clusters=ocvs_target_clusters,
+            ocvs_multi_cluster=ocvs_multi_cluster,
+            hybrid_ocvs_topology=hybrid_ocvs_topology,
+            hybrid_ocvs_target_clusters=hybrid_ocvs_target_clusters,
+            hybrid_ocvs_multi_cluster=hybrid_ocvs_multi_cluster,
             scenario_comparison=scenario_comparison,
             executive_summary=executive_summary,
             fit_warnings=fit_warnings,
@@ -11359,8 +13393,833 @@ def step4() -> str:
             workspace_continue_submit_name="continue_to_results",
             workspace_continue_submit_value="1",
             workspace_continue_label="Save & Continue",
+            sdd_configuration=(
+                normalize_sdd_configuration(app_state.get("sdd_configuration"))
+                if str(scenario_ui.get("id")) == "ocvs"
+                else None
+            ),
+            sdd_readiness=(
+                build_ocvs_sdd_readiness(
+                    build_ocvs_sdd_source_snapshot(
+                        vm_rows=vm_rows,
+                        analysis=analysis,
+                        customer_name=customer_name,
+                        assessment_name=normalize_assessment_name(session.get("active_assessment_name", "")),
+                        assessment_id=_clean_assessment_id(session.get("active_assessment_id", "")),
+                        selected_rvtools_file=selected_rvtools_file,
+                        source_vinfo_csv=source_vinfo_csv,
+                        pricing_currency=pricing_currency,
+                        iaas_discount_pct=iaas_discount_pct,
+                        ocvs_policy=ocvs_policy,
+                        ocvs_profile_choice=ocvs_profile_choice,
+                        ocvs_commitment_term=ocvs_commitment_term,
+                        ocvs_dr_nodes=ocvs_dr_nodes,
+                        ocvs_topology=ocvs_topology,
+                        step4_last_updated_at=step4_last_updated_at,
+                    ),
+                    app_state.get("sdd_configuration", {}),
+                    scenario_id="ocvs",
+                )
+                if str(scenario_ui.get("id")) == "ocvs"
+                else None
+            ),
+            sdd_source_summary=(
+                {
+                    "topology": ocvs_topology,
+                    "selected_vm_count": len(vm_rows),
+                    "target_cluster_count": (
+                        int(ocvs_multi_cluster.get("cluster_count", 0) or 0)
+                        if ocvs_topology == "multi" and isinstance(ocvs_multi_cluster, dict)
+                        else 1
+                    ),
+                    "saved_at": step4_last_updated_at,
+                }
+                if str(scenario_ui.get("id")) == "ocvs"
+                else None
+            ),
+            sdd_governance=(
+                build_ocvs_sdd_governance_summary(
+                    normalize_sdd_configuration(app_state.get("sdd_configuration")),
+                    _ocvs_sdd_artifact_root(),
+                )
+                if str(scenario_ui.get("id")) == "ocvs"
+                else None
+            ),
+            sdd_handover=(
+                build_ocvs_sdd_handover_summary(
+                    normalize_sdd_configuration(app_state.get("sdd_configuration")),
+                    _ocvs_sdd_artifact_root(),
+                )
+                if str(scenario_ui.get("id")) == "ocvs"
+                else None
+            ),
         ),
     )
+
+
+def _sdd_form_text(name: str, limit: int = 8000) -> str:
+    value = str(request.form.get(name, "")).replace("\r\n", "\n").replace("\r", "\n")
+    return value.strip()[:limit]
+
+
+def _sdd_form_lines(name: str) -> list[str]:
+    return [line.strip() for line in _sdd_form_text(name).replace(",", "\n").splitlines() if line.strip()]
+
+
+def _sdd_form_rows(prefix: str, fields: tuple[str, ...]) -> list[dict[str, str]]:
+    columns = {field: request.form.getlist(f"{prefix}_{field}[]") for field in fields}
+    length = max((len(values) for values in columns.values()), default=0)
+    rows: list[dict[str, str]] = []
+    for index in range(min(length, 100)):
+        row = {
+            field: str(columns[field][index] if index < len(columns[field]) else "").strip()[:2000]
+            for field in fields
+        }
+        if any(row.values()):
+            rows.append(row)
+    return rows
+
+
+def _update_sdd_wizard_section(config: dict[str, Any], section: str) -> dict[str, Any]:
+    """Apply one wizard form without touching calculated sizing data."""
+    if section == "customer-project":
+        document = config["customer_document"]
+        for key in (
+            "customer_legal_name", "project_name", "assessment_name", "document_author",
+            "document_author_email", "version", "version_comment", "confidentiality_classification",
+        ):
+            document[key] = _sdd_form_text(key, 1000)
+        for group in ("reviewers", "approvers", "project_team"):
+            config["delivery"][group] = _sdd_form_rows(group, ("name", "email", "role", "company"))
+    elif section == "business-requirements":
+        for key in (
+            "customer_business_context", "business_drivers", "solution_scope_summary",
+            "business_requirements", "technical_requirements", "compliance_requirements",
+            "success_criteria", "assumptions", "known_risks", "customer_obligations", "out_of_scope",
+        ):
+            config["business"][key] = _sdd_form_text(key)
+    elif section == "network-design":
+        for key in (
+            "oci_region", "tenancy_name_or_ocid", "compartment_name_or_ocid", "vcn_name",
+            "vcn_cidr", "sddc_cidr", "drg_details", "fastconnect_details",
+            "ipsec_vpn_details", "hcx_details",
+        ):
+            config["network"][key] = _sdd_form_text(key, 4000)
+        for key in (
+            "workload_cidrs", "management_cidrs", "vmotion_cidrs", "replication_cidrs",
+            "hcx_cidrs", "dns_servers", "ntp_servers",
+        ):
+            config["network"][key] = _sdd_form_lines(key)
+        for key in ("fastconnect_enabled", "ipsec_vpn_enabled", "hcx_enabled"):
+            config["network"][key] = request.form.get(key) == "1"
+        config["network"]["segments"] = _sdd_form_rows(
+            "segments", ("name", "purpose", "cidr", "vlan", "gateway", "routing_notes", "security_notes")
+        )
+    elif section == "security-compliance":
+        enabled = request.form.get("include_security") == "1"
+        config["section_flags"]["include_security"] = enabled
+        config["security"]["include_section"] = enabled
+        for key in (
+            "iam_model", "encryption_requirements", "logging_requirements", "siem_integration",
+            "monitoring_requirements", "security_requirements", "compliance_requirements",
+            "responsibility_notes",
+        ):
+            config["security"][key] = _sdd_form_text(key)
+    elif section == "operations-resilience":
+        provider = _sdd_form_text("implementation_provider", 20).lower()
+        config["operations"]["implementation_provider"] = provider if provider in {"customer", "partner", "oracle"} else "customer"
+        for key in (
+            "operating_model", "monitoring_approach", "backup_requirements", "dr_requirements",
+            "ha_requirements", "support_model", "escalation_model", "operational_ownership",
+            "service_management_integration",
+        ):
+            config["operations"][key] = _sdd_form_text(key)
+        for key in ("backup", "disaster_recovery", "ha"):
+            status = _sdd_form_text(f"{key}_status", 30) or "not_provided"
+            config["operations"][key] = {
+                "status": status,
+                "enabled": status == "enabled",
+                "description": config["operations"].get({"backup": "backup_requirements", "disaster_recovery": "dr_requirements", "ha": "ha_requirements"}[key], ""),
+            }
+    elif section == "migration-transition":
+        for key in (
+            "migration_method", "migration_tooling", "migration_wave_strategy", "migration_window",
+            "downtime_tolerance", "validation_approach", "rollback_approach", "transition_plan_summary",
+        ):
+            config["delivery"][key] = _sdd_form_text(key)
+        for key in ("include_raci", "include_risks", "include_transition"):
+            config["section_flags"][key] = request.form.get(key) == "1"
+        config["delivery"]["implementation_scope"] = _sdd_form_rows("scope", ("activity", "deliverable", "owner"))
+        config["delivery"]["transition_milestones"] = _sdd_form_rows(
+            "milestones", ("milestone", "owner", "date", "dependency", "status", "notes")
+        )
+        config["delivery"]["risks"] = _sdd_form_rows("risks", ("id", "description", "impact", "mitigation", "owner"))
+        config["delivery"]["customer_obligations"] = _sdd_form_rows("obligations", ("statement", "owner", "due_date"))
+        config["delivery"]["raci"] = _sdd_form_rows(
+            "raci", ("activity", "customer", "partner", "oracle", "notes")
+        )
+    return normalize_sdd_configuration(config)
+
+
+def _current_ocvs_sdd_snapshot() -> tuple[dict[str, Any] | None, str]:
+    context, redirect_endpoint = build_current_price_page_context()
+    if context is None:
+        return None, redirect_endpoint
+    snapshot = build_ocvs_sdd_source_snapshot(
+        vm_rows=list(context.get("vm_rows") or []), analysis=context,
+        customer_name=str(context.get("customer_name") or ""),
+        assessment_name=normalize_assessment_name(session.get("active_assessment_name", "")),
+        assessment_id=_clean_assessment_id(session.get("active_assessment_id", "")),
+        selected_rvtools_file=str(context.get("selected_rvtools_file") or session.get("selected_rvtools_file", "")),
+        source_vinfo_csv=str(context.get("source_vinfo_csv") or ""),
+        pricing_currency=str(context.get("pricing_currency") or "USD"),
+        iaas_discount_pct=float(context.get("iaas_discount_pct", 0.0) or 0.0),
+        ocvs_policy=dict(context.get("ocvs_policy") or {}),
+        ocvs_profile_choice=str(context.get("ocvs_profile_choice") or "best_fit"),
+        ocvs_commitment_term=str(context.get("ocvs_commitment_term") or "payg"),
+        ocvs_dr_nodes=int(context.get("ocvs_dr_nodes", 0) or 0),
+        ocvs_topology=str(context.get("ocvs_topology") or "single"),
+        step4_last_updated_at=str(context.get("step4_last_updated_at") or ""),
+    )
+    return snapshot, "step4"
+
+
+def _sdd_actor() -> str:
+    """Return an explicit form actor, falling back to the configured document author."""
+    actor = re.sub(r"\s+", " ", str(request.form.get("actor") or "")).strip()[:160]
+    if actor:
+        return actor
+    config = normalize_sdd_configuration(load_app_state().get("sdd_configuration"))
+    return str(config.get("customer_document", {}).get("document_author") or "Current user")[:160]
+
+
+def _safe_customer_filename(value: Any) -> str:
+    clean = secure_filename(str(value or "customer").strip()).strip("._")
+    return clean or "customer"
+
+
+def _generate_ocvs_sdd_document(
+    snapshot: dict[str, Any],
+    config: dict[str, Any],
+    *,
+    final: bool,
+) -> tuple[bytes, dict[str, Any], str]:
+    """Generate a private temporary DOCX and return bytes, audit report and filename."""
+    from scripts.generate_ocvs_sdd import generate as generate_ocvs_sdd
+
+    workflow = normalize_review_workflow(config.get("review_workflow"))
+    version = workflow.get("final_version") if final else workflow.get("current_revision")
+    payload = build_sdd_payload(snapshot, config, final=final, document_version=version)
+    customer = _safe_customer_filename(payload.get("document", {}).get("customer_name"))
+    filename = (
+        f"{customer}_OCVS_Solution_Definition_v{version or '0.1'}.docx"
+        if final else build_export_filename(customer, f"OCVS_SDD_Draft_v{version or '0.1'}", "docx")
+    )
+    with tempfile.TemporaryDirectory(prefix="ocvs-sdd-private-") as temp_dir:
+        temp_root = Path(temp_dir)
+        input_path = temp_root / "input.json"
+        output_path = temp_root / secure_filename(filename)
+        input_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        report = generate_ocvs_sdd(OCVS_SDD_TEMPLATE_PATH, input_path, output_path, OCVS_SDD_SCHEMA_PATH)
+        return output_path.read_bytes(), report, filename
+
+
+def _convert_docx_bytes_to_pdf(document_bytes: bytes, filename: str) -> bytes:
+    """Convert a generated DOCX to PDF using the installed office runtime."""
+    office = shutil.which("soffice") or shutil.which("libreoffice")
+    if not office:
+        raise OSError("A LibreOffice runtime is required to create the final PDF.")
+    with tempfile.TemporaryDirectory(prefix="ocvs-sdd-pdf-private-") as temp_dir:
+        temp_root = Path(temp_dir)
+        docx_path = temp_root / secure_filename(filename)
+        docx_path.write_bytes(document_bytes)
+        completed = subprocess.run(
+            [office, "--headless", "--convert-to", "pdf", "--outdir", str(temp_root), str(docx_path)],
+            check=False, capture_output=True, text=True, timeout=120,
+        )
+        pdf_path = docx_path.with_suffix(".pdf")
+        if completed.returncode or not pdf_path.exists():
+            raise OSError("The final PDF could not be created.")
+        return pdf_path.read_bytes()
+
+
+@app.route("/step4/sdd/configure")
+def step4_sdd_configure() -> Any:
+    scenario = selected_business_scenario() or {}
+    if str(scenario.get("id") or "") != "ocvs":
+        flash("Draft SDD configuration is available only for Move to OCVS.", "error")
+        return redirect(step4_tab_redirect("price")), 303
+    config = normalize_sdd_configuration(load_app_state().get("sdd_configuration"))
+    return redirect(url_for("step4_sdd_configure_section", section=config["wizard"]["current_step"])), 302
+
+
+@app.route("/step4/sdd/configure/<section>", methods=["GET", "POST"])
+def step4_sdd_configure_section(section: str) -> Any:
+    scenario = selected_business_scenario() or {}
+    if str(scenario.get("id") or "") != "ocvs":
+        flash("Draft SDD configuration is available only for Move to OCVS.", "error")
+        return redirect(step4_tab_redirect("price")), 303
+    if section not in WIZARD_SECTIONS:
+        return redirect(url_for("step4_sdd_configure_section", section=WIZARD_SECTIONS[0])), 302
+    app_state = load_app_state()
+    config = normalize_sdd_configuration(app_state.get("sdd_configuration"))
+    if not config["customer_document"].get("assessment_name"):
+        config["customer_document"]["assessment_name"] = normalize_assessment_name(session.get("active_assessment_name", ""))
+    if not config["customer_document"].get("customer_legal_name"):
+        config["customer_document"]["customer_legal_name"] = normalize_customer_name(session.get("customer_name", ""))
+    section_errors: list[str] = []
+    if request.method == "POST" and section != "review-generate":
+        config = _update_sdd_wizard_section(config, section)
+        validation = validate_ocvs_sdd_section(section, config)
+        section_errors = validation["errors"]
+        config["wizard"]["current_step"] = section
+        config["wizard"]["last_saved_section"] = section
+        completed = set(config["wizard"].get("completed_steps") or [])
+        if not section_errors:
+            completed.add(section)
+        else:
+            completed.discard(section)
+        config["wizard"]["completed_steps"] = [item for item in WIZARD_SECTIONS if item in completed]
+        snapshot, redirect_endpoint = _current_ocvs_sdd_snapshot()
+        if snapshot is None:
+            return redirect(url_for(redirect_endpoint)), 303
+        config["source_assessment_id"] = _clean_assessment_id(session.get("active_assessment_id", ""))
+        config["source_step4_updated_at"] = str(snapshot.get("source_step4_updated_at") or "")
+        config["source_snapshot_hash"] = ocvs_sdd_snapshot_hash(snapshot)
+        config["last_saved_at"] = datetime.now().isoformat(timespec="seconds")
+        config, review_invalidated = invalidate_ocvs_sdd_review_if_stale(config, snapshot)
+        status = build_ocvs_sdd_readiness(snapshot, config, scenario_id="ocvs")
+        config["wizard"]["completion_percentage"] = status["completion_percentage"]
+        config["validation_results"] = status
+        app_state["sdd_configuration"] = config
+        app_state["sdd_source_snapshot"] = snapshot
+        save_app_state(app_state)
+        if request.form.get("wizard_action") == "continue" and not section_errors:
+            next_index = min(WIZARD_SECTIONS.index(section) + 1, len(WIZARD_SECTIONS) - 1)
+            config["wizard"]["current_step"] = WIZARD_SECTIONS[next_index]
+            app_state["sdd_configuration"] = config
+            save_app_state(app_state)
+            return redirect(url_for("step4_sdd_configure_section", section=WIZARD_SECTIONS[next_index])), 303
+        if review_invalidated:
+            flash("The approved or reviewed SDD changed and must complete a new review cycle.", "warning")
+        flash("Draft SDD section saved." if not section_errors else section_errors[0], "success" if not section_errors else "error")
+        return redirect(url_for("step4_sdd_configure_section", section=section)), 303
+
+    snapshot = app_state.get("sdd_source_snapshot") if isinstance(app_state.get("sdd_source_snapshot"), dict) else {}
+    current_snapshot, _redirect_endpoint = _current_ocvs_sdd_snapshot()
+    status_snapshot = current_snapshot if isinstance(current_snapshot, dict) else snapshot
+    config, review_invalidated = invalidate_ocvs_sdd_review_if_stale(config, status_snapshot)
+    if review_invalidated:
+        app_state["sdd_configuration"] = config
+        save_app_state(app_state)
+    status = build_ocvs_sdd_readiness(status_snapshot, config, scenario_id="ocvs")
+    index = WIZARD_SECTIONS.index(section)
+    return render_template(
+        "sdd_wizard.html",
+        **build_workspace_context(
+            "results", readiness={}, config=config, sdd_snapshot=snapshot, sdd_readiness=status,
+            wizard_sections=WIZARD_SECTIONS, wizard_labels=WIZARD_LABELS,
+            active_section=section, active_section_label=WIZARD_LABELS[section],
+            previous_section=WIZARD_SECTIONS[index - 1] if index > 0 else "",
+            next_section=WIZARD_SECTIONS[index + 1] if index + 1 < len(WIZARD_SECTIONS) else "",
+            section_errors=section_errors, scenario_ui=business_scenario_ui(),
+        ),
+    )
+
+
+@app.route("/step4/sdd/review", methods=["GET", "POST"])
+def step4_sdd_review() -> Any:
+    """Technical review, approval and finalization workspace for Move to OCVS."""
+    scenario = selected_business_scenario() or {}
+    if str(scenario.get("id") or "") != "ocvs":
+        flash("The SDD review workflow is available only for Move to OCVS.", "error")
+        return redirect(step4_tab_redirect("price")), 303
+    app_state = load_app_state()
+    config = normalize_sdd_configuration(app_state.get("sdd_configuration"))
+    snapshot, redirect_endpoint = _current_ocvs_sdd_snapshot()
+    if snapshot is None:
+        return redirect(url_for(redirect_endpoint)), 303
+    config, invalidated = invalidate_ocvs_sdd_review_if_stale(config, snapshot)
+    readiness = build_ocvs_sdd_readiness(snapshot, config, scenario_id="ocvs")
+    if invalidated:
+        app.logger.info("SDD review approval invalidated assessment=%s", config.get("source_assessment_id") or "unsaved")
+        flash("The SDD source information changed. A new review cycle is required.", "warning")
+
+    if request.method == "POST":
+        action = str(request.form.get("action") or "").strip()
+        actor = _sdd_actor()
+        workflow = normalize_review_workflow(config.get("review_workflow"))
+        errors: list[str] = []
+        audit_event = action
+        if action in {"add_reviewer", "add_approver"}:
+            kind = "reviewer" if action == "add_reviewer" else "approver"
+            name = re.sub(r"\s+", " ", str(request.form.get("name") or "")).strip()[:160]
+            email = str(request.form.get("email") or "").strip()[:254]
+            if workflow["status"] not in {"draft", "changes_requested"}:
+                errors.append("Reviewer and approver assignments can be changed only before or between review cycles.")
+            elif not name or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+                errors.append("Provide a name and valid e-mail address.")
+            else:
+                workflow[f"{kind}s"].append({
+                    "id": uuid4().hex, "name": name, "email": email,
+                    "role": re.sub(r"\s+", " ", str(request.form.get("role") or "")).strip()[:160],
+                    "company": re.sub(r"\s+", " ", str(request.form.get("company") or "")).strip()[:160],
+                    "required": bool(request.form.get("required", "1")), "status": "pending", "date": "", "comment": "",
+                })
+                config["review_workflow"] = workflow
+        elif action == "remove_person":
+            if workflow["status"] not in {"draft", "changes_requested"}:
+                errors.append("Reviewer and approver assignments can be changed only before or between review cycles.")
+            else:
+                person_id = str(request.form.get("person_id") or "")
+                workflow["reviewers"] = [item for item in workflow["reviewers"] if item["id"] != person_id]
+                workflow["approvers"] = [item for item in workflow["approvers"] if item["id"] != person_id]
+                config["review_workflow"] = workflow
+        elif action == "submit_review":
+            config, errors = submit_ocvs_sdd_review(config, snapshot, readiness, actor)
+        elif action == "add_comment":
+            config, error = add_ocvs_sdd_review_comment(
+                config, section=str(request.form.get("section") or "General"),
+                author=actor, comment=str(request.form.get("comment") or ""),
+                severity=str(request.form.get("severity") or "informational"),
+            )
+            if error: errors.append(error)
+        elif action == "resolve_comment":
+            config, error = resolve_ocvs_sdd_review_comment(config, str(request.form.get("comment_id") or ""), actor, str(request.form.get("resolution_note") or ""))
+            if error: errors.append(error)
+        elif action == "complete_review":
+            config, error = complete_ocvs_sdd_review(config, str(request.form.get("reviewer_id") or ""), actor, str(request.form.get("review_comment") or ""))
+            if error: errors.append(error)
+        elif action == "request_changes":
+            config, error = request_ocvs_sdd_changes(config, actor, str(request.form.get("workflow_comment") or ""))
+            if error: errors.append(error)
+        elif action == "approve":
+            config, errors = approve_ocvs_sdd(config, snapshot, readiness, str(request.form.get("approver_id") or ""), actor, str(request.form.get("approval_comment") or ""))
+        elif action == "finalize":
+            proposed, errors = finalize_ocvs_sdd(config, snapshot, readiness, actor)
+            if not errors:
+                try:
+                    final_bytes, _report, final_name = _generate_ocvs_sdd_document(snapshot, proposed, final=True)
+                    pdf_bytes = _convert_docx_bytes_to_pdf(final_bytes, final_name)
+                    proposed["delivery_governance"] = store_ocvs_sdd_final_artifacts(
+                        _ocvs_sdd_artifact_root(), proposed, snapshot, final_bytes, pdf_bytes, actor,
+                    )
+                    config = proposed
+                except (OSError, ValueError, json.JSONDecodeError):
+                    app.logger.exception("SDD finalization artifact validation failed")
+                    errors.append("Customer-ready DOCX and PDF validation failed. Confirm that the document and PDF runtimes are available.")
+        else:
+            errors.append("Choose a valid SDD review action.")
+
+        if not errors:
+            config = normalize_sdd_configuration(config)
+            app_state["sdd_configuration"] = config
+            app_state["sdd_source_snapshot"] = snapshot
+            save_app_state(app_state)
+            app.logger.info("SDD workflow event=%s assessment=%s status=%s", audit_event, config.get("source_assessment_id") or "unsaved", config["review_workflow"]["status"])
+            flash("SDD review workflow updated.", "success")
+        else:
+            flash(errors[0], "error")
+        return redirect(url_for("step4_sdd_review")), 303
+
+    app_state["sdd_configuration"] = config
+    save_app_state(app_state)
+    review = build_ocvs_sdd_review_summary(config, snapshot, readiness)
+    governance = build_ocvs_sdd_governance_summary(config, _ocvs_sdd_artifact_root())
+    return render_template(
+        "sdd_review.html",
+        **build_workspace_context(
+            "results", readiness={}, config=config, sdd_snapshot=snapshot,
+            sdd_readiness=readiness, sdd_review=review, sdd_governance=governance,
+            scenario_ui=business_scenario_ui(),
+        ),
+    )
+
+
+@app.route("/step4/sdd/final/<file_format>")
+def step4_sdd_final_download(file_format: str) -> Any:
+    """Download the latest immutable finalized artifact after integrity validation."""
+    scenario = selected_business_scenario() or {}
+    if str(scenario.get("id") or "") != "ocvs" or file_format not in {"docx", "pdf"}:
+        return redirect(step4_tab_redirect("price")), 303
+    app_state = load_app_state()
+    config = normalize_sdd_configuration(app_state.get("sdd_configuration"))
+    snapshot, redirect_endpoint = _current_ocvs_sdd_snapshot()
+    if snapshot is None:
+        return redirect(url_for(redirect_endpoint)), 303
+    governance = normalize_delivery_governance(config.get("delivery_governance"))
+    version = governance["latest_finalized_version"] or governance["latest_delivered_version"]
+    record = find_ocvs_sdd_version(governance, version=version)
+    if not record:
+        flash("No immutable finalized SDD artifact is available on this host.", "error")
+        return redirect(url_for("step4_sdd_delivery")), 303
+    try:
+        document_bytes = read_ocvs_sdd_artifact(_ocvs_sdd_artifact_root(), record, file_format)
+        filename = record[f"{file_format}_filename"]
+        mimetype = "application/pdf" if file_format == "pdf" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        app.logger.info("SDD artifact download format=%s version=%s", file_format, record["version"])
+        return send_file(io.BytesIO(document_bytes), as_attachment=True, download_name=filename, mimetype=mimetype, max_age=0)
+    except (OSError, ValueError, json.JSONDecodeError):
+        app.logger.warning("Final SDD artifact integrity validation failed version=%s", record["version"])
+        flash("The finalized SDD artifact is unavailable or failed integrity validation.", "error")
+        return redirect(url_for("step4_sdd_delivery")), 303
+
+
+@app.route("/step4/sdd/artifact/<artifact_id>/<file_format>")
+def step4_sdd_artifact_download(artifact_id: str, file_format: str) -> Any:
+    """Download one historical immutable artifact by opaque identifier."""
+    if file_format not in {"docx", "pdf"} or str((selected_business_scenario() or {}).get("id") or "") != "ocvs":
+        return redirect(step4_tab_redirect("price")), 303
+    app_state = load_app_state()
+    config = normalize_sdd_configuration(app_state.get("sdd_configuration"))
+    record = find_ocvs_sdd_version(config.get("delivery_governance", {}), artifact_id=artifact_id)
+    if not record:
+        flash("The requested SDD version was not found.", "error")
+        return redirect(url_for("step4_sdd_delivery")), 303
+    try:
+        data = read_ocvs_sdd_artifact(_ocvs_sdd_artifact_root(), record, file_format)
+        config = record_ocvs_sdd_audit(config, "artifact_download", _sdd_actor(), record["version"], file_format.upper())
+        app_state["sdd_configuration"] = normalize_sdd_configuration(config)
+        save_app_state(app_state)
+        mimetype = "application/pdf" if file_format == "pdf" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        return send_file(io.BytesIO(data), as_attachment=True, download_name=record[f"{file_format}_filename"], mimetype=mimetype, max_age=0)
+    except (OSError, ValueError):
+        app.logger.warning("SDD artifact integrity validation failed version=%s", record["version"])
+        flash("The requested artifact is unavailable or failed integrity validation.", "error")
+        return redirect(url_for("step4_sdd_delivery")), 303
+
+
+@app.route("/step4/sdd/package/<artifact_id>")
+def step4_sdd_delivery_package(artifact_id: str) -> Any:
+    """Build a four-file customer delivery package from immutable artifacts."""
+    if str((selected_business_scenario() or {}).get("id") or "") != "ocvs":
+        return redirect(step4_tab_redirect("price")), 303
+    app_state = load_app_state()
+    config = normalize_sdd_configuration(app_state.get("sdd_configuration"))
+    snapshot = app_state.get("sdd_source_snapshot") if isinstance(app_state.get("sdd_source_snapshot"), dict) else {}
+    record = find_ocvs_sdd_version(config.get("delivery_governance", {}), artifact_id=artifact_id)
+    if not record:
+        flash("The requested SDD version was not found.", "error")
+        return redirect(url_for("step4_sdd_delivery")), 303
+    try:
+        package, filename = build_ocvs_sdd_delivery_package(_ocvs_sdd_artifact_root(), config, snapshot, record)
+        config = record_ocvs_sdd_audit(config, "delivery_package_created", _sdd_actor(), record["version"], "Integrity verified.")
+        app_state["sdd_configuration"] = normalize_sdd_configuration(config)
+        save_app_state(app_state)
+        return send_file(io.BytesIO(package), as_attachment=True, download_name=filename, mimetype="application/zip", max_age=0)
+    except (OSError, ValueError):
+        app.logger.warning("SDD delivery package integrity validation failed version=%s", record["version"])
+        flash("The delivery package could not be created because an artifact is unavailable or invalid.", "error")
+        return redirect(url_for("step4_sdd_delivery")), 303
+
+
+@app.route("/step4/sdd/delivery", methods=["GET", "POST"])
+def step4_sdd_delivery() -> Any:
+    """Customer delivery and immutable SDD version-governance workspace."""
+    if str((selected_business_scenario() or {}).get("id") or "") != "ocvs":
+        flash("SDD customer delivery is available only for Move to OCVS.", "error")
+        return redirect(step4_tab_redirect("price")), 303
+    app_state = load_app_state()
+    config = normalize_sdd_configuration(app_state.get("sdd_configuration"))
+    snapshot, redirect_endpoint = _current_ocvs_sdd_snapshot()
+    if snapshot is None:
+        return redirect(url_for(redirect_endpoint)), 303
+    if request.method == "POST":
+        action = str(request.form.get("action") or "").strip()
+        actor = _sdd_actor()
+        errors: list[str] = []
+        if action == "mark_delivered":
+            config, errors = mark_ocvs_sdd_delivered(
+                config, _ocvs_sdd_artifact_root(), str(request.form.get("artifact_id") or ""), actor,
+                str(request.form.get("delivery_date") or ""),
+                {"name": request.form.get("recipient_name"), "company": request.form.get("recipient_company"), "email": request.form.get("recipient_email")},
+                str(request.form.get("delivery_comment") or ""),
+            )
+            if not errors:
+                config, errors = start_ocvs_sdd_acceptance(
+                    config, _ocvs_sdd_artifact_root(), str(request.form.get("artifact_id") or ""), actor,
+                )
+        elif action == "start_revision":
+            config, errors = start_ocvs_sdd_revision(config, actor, str(request.form.get("revision_reason") or ""))
+            if not errors:
+                config = invalidate_ocvs_sdd_acceptance_for_revision(
+                    config, actor, str(config.get("review_workflow", {}).get("current_revision") or ""),
+                )
+        elif action == "supersede":
+            config, error = supersede_ocvs_sdd_version(config, str(request.form.get("version") or ""), actor)
+            if error: errors.append(error)
+        else:
+            errors.append("Choose a valid customer-delivery action.")
+        if errors:
+            flash(errors[0], "error")
+        else:
+            app_state["sdd_configuration"] = normalize_sdd_configuration(config)
+            save_app_state(app_state)
+            app.logger.info("SDD governance event=%s version=%s", action, config.get("customer_document", {}).get("version") or "unknown")
+            flash("SDD customer-delivery workflow updated.", "success")
+            if action == "start_revision":
+                return redirect(url_for("step4_sdd_configure")), 303
+        return redirect(url_for("step4_sdd_delivery")), 303
+    governance = build_ocvs_sdd_governance_summary(config, _ocvs_sdd_artifact_root())
+    return render_template(
+        "sdd_delivery.html",
+        **build_workspace_context(
+            "results", readiness={}, config=config, sdd_snapshot=snapshot,
+            sdd_governance=governance, scenario_ui=business_scenario_ui(),
+        ),
+    )
+
+
+@app.route("/step4/sdd/acceptance", methods=["GET", "POST"])
+def step4_sdd_acceptance() -> Any:
+    """Customer acceptance, implementation readiness, and handover workspace."""
+    if str((selected_business_scenario() or {}).get("id") or "") != "ocvs":
+        flash("Customer Acceptance & Handover is available only for Move to OCVS.", "error")
+        return redirect(step4_tab_redirect("price")), 303
+    app_state = load_app_state()
+    config = normalize_sdd_configuration(app_state.get("sdd_configuration"))
+    snapshot = app_state.get("sdd_source_snapshot") if isinstance(app_state.get("sdd_source_snapshot"), dict) else {}
+    if request.method == "POST":
+        action = str(request.form.get("action") or "").strip()
+        actor = _sdd_actor()
+        acceptance_id = str(request.form.get("acceptance_id") or "").strip()
+        errors: list[str] = []
+        if action == "start_acceptance":
+            config, errors = start_ocvs_sdd_acceptance(
+                config, _ocvs_sdd_artifact_root(), str(request.form.get("artifact_id") or ""), actor,
+                copy_previous=bool(request.form.get("copy_previous")),
+            )
+        elif action == "record_acceptance":
+            config, errors = record_ocvs_sdd_acceptance_decision(config, _ocvs_sdd_artifact_root(), acceptance_id, {
+                "decision": request.form.get("decision"), "customer_representative": request.form.get("customer_representative"),
+                "customer_role": request.form.get("customer_role"), "customer_company": request.form.get("customer_company"),
+                "decision_date": request.form.get("decision_date"), "customer_email": request.form.get("customer_email"),
+                "comments": request.form.get("acceptance_comments"), "conditions": request.form.get("conditions"),
+                "evidence_reference": request.form.get("evidence_reference"), "recorded_by": request.form.get("recorded_by"),
+                "recording_date": request.form.get("recording_date"),
+            })
+        elif action == "update_checklist":
+            config, errors = update_ocvs_sdd_checklist_item(config, _ocvs_sdd_artifact_root(), acceptance_id, str(request.form.get("item_id") or ""), {
+                "status": request.form.get("status"), "owner": request.form.get("owner"), "target_date": request.form.get("target_date"),
+                "comment": request.form.get("comment"), "evidence": request.form.get("evidence"),
+            }, actor)
+        elif action == "set_owners":
+            config, errors = set_ocvs_sdd_readiness_owners(config, _ocvs_sdd_artifact_root(), acceptance_id,
+                str(request.form.get("implementation_owner") or ""), str(request.form.get("migration_planning_owner") or ""), actor)
+        elif action == "create_action":
+            config, errors = create_ocvs_sdd_handover_action(config, _ocvs_sdd_artifact_root(), acceptance_id, {
+                "action_identifier": request.form.get("action_identifier"), "category": request.form.get("category"),
+                "description": request.form.get("description"), "source": request.form.get("source"), "owner": request.form.get("owner"),
+                "due_date": request.form.get("due_date"), "priority": request.form.get("priority"), "status": request.form.get("status"),
+            }, actor)
+        elif action == "update_action":
+            config, errors = update_ocvs_sdd_handover_action(config, _ocvs_sdd_artifact_root(), acceptance_id,
+                str(request.form.get("action_id") or ""), {
+                    "category": request.form.get("category"), "owner": request.form.get("owner"), "due_date": request.form.get("due_date"),
+                    "priority": request.form.get("priority"), "status": request.form.get("status"),
+                    "resolution_comment": request.form.get("resolution_comment"), "closed_date": request.form.get("closed_date"),
+                }, actor)
+        elif action == "confirm_handover":
+            config, errors = confirm_ocvs_sdd_handover(config, _ocvs_sdd_artifact_root(), acceptance_id, {
+                "handed_over_by": request.form.get("handed_over_by"), "received_by": request.form.get("received_by"),
+                "receiving_company": request.form.get("receiving_company"), "handover_date": request.form.get("handover_date"),
+                "implementation_owner": request.form.get("implementation_owner"), "migration_planning_owner": request.form.get("migration_planning_owner"),
+                "planned_start_date": request.form.get("planned_start_date"), "comments": request.form.get("handover_comments"),
+            })
+        elif action == "start_migration_planning":
+            payload, errors = build_ocvs_migration_planning_payload(config, snapshot, acceptance_id)
+            if not errors:
+                governance = normalize_acceptance_handover(config.get("acceptance_handover"))
+                target = next((item for item in governance["records"] if item["id"] == acceptance_id), None)
+                if target is not None:
+                    target["migration_planning_payload"] = payload
+                    config["acceptance_handover"] = governance
+                    app_state["migration_planning_handover"] = payload
+        else:
+            errors.append("Choose a valid customer-acceptance or handover action.")
+        if errors:
+            flash(errors[0], "error")
+        else:
+            app_state["sdd_configuration"] = normalize_sdd_configuration(config)
+            save_app_state(app_state)
+            flash("Customer acceptance and handover workflow updated.", "success")
+        return redirect(url_for("step4_sdd_acceptance")), 303
+    handover = build_ocvs_sdd_handover_summary(config, _ocvs_sdd_artifact_root())
+    delivery = build_ocvs_sdd_governance_summary(config, _ocvs_sdd_artifact_root())
+    return render_template("sdd_acceptance.html", **build_workspace_context(
+        "results", readiness={}, config=config, sdd_snapshot=snapshot, sdd_handover=handover,
+        sdd_governance=delivery, scenario_ui=business_scenario_ui(),
+    ))
+
+
+@app.route("/step4/sdd/handover-package/<acceptance_id>")
+def step4_sdd_handover_package(acceptance_id: str) -> Any:
+    """Generate a nine-file implementation handover package."""
+    if str((selected_business_scenario() or {}).get("id") or "") != "ocvs":
+        return redirect(step4_tab_redirect("price")), 303
+    app_state = load_app_state(); config = normalize_sdd_configuration(app_state.get("sdd_configuration"))
+    snapshot = app_state.get("sdd_source_snapshot") if isinstance(app_state.get("sdd_source_snapshot"), dict) else {}
+    try:
+        package, filename, _manifest = build_ocvs_sdd_handover_package(_ocvs_sdd_artifact_root(), config, snapshot, acceptance_id)
+        governance = normalize_acceptance_handover(config.get("acceptance_handover"))
+        record = next((item for item in governance["records"] if item["id"] == acceptance_id), None)
+        if record:
+            governance["audit_events"].append({"id":uuid4().hex,"event":"handover_package_generated","timestamp":datetime.now(timezone.utc).isoformat(timespec="seconds"),"actor":_sdd_actor(),"version":record["sdd_version"],"assessment_id":record["assessment_id"],"description":"Implementation handover package generated after integrity validation."})
+            config["acceptance_handover"] = governance; app_state["sdd_configuration"] = normalize_sdd_configuration(config); save_app_state(app_state)
+        return send_file(io.BytesIO(package), as_attachment=True, download_name=filename, mimetype="application/zip", max_age=0)
+    except (OSError, ValueError):
+        app.logger.exception("SDD implementation handover package generation failed")
+        flash("The implementation handover package could not be generated.", "error")
+        return redirect(url_for("step4_sdd_acceptance")), 303
+
+
+@app.route("/step4/sdd", methods=["POST"])
+def step4_sdd() -> Any:
+    """Save, validate, or generate the Move-to-OCVS Draft SDD."""
+    scenario = selected_business_scenario() or {}
+    if str(scenario.get("id") or "") != "ocvs":
+        flash("Draft SDD generation is available only for Move to OCVS.", "error")
+        return redirect(step4_tab_redirect("price")), 303
+    action = str(request.form.get("action") or "").strip()
+    app_state = load_app_state()
+    config = normalize_sdd_configuration(app_state.get("sdd_configuration"))
+
+    if action == "save_sdd_details":
+        customer_document = config["customer_document"]
+        business = config["business"]
+        for key in (
+            "customer_legal_name", "project_name", "document_author",
+            "document_author_email", "version", "version_comment",
+        ):
+            customer_document[key] = re.sub(r"\s+", " ", str(request.form.get(key, ""))).strip()[:1000]
+        for key in (
+            "customer_business_context", "business_drivers", "solution_scope_summary",
+            "business_requirements", "technical_requirements", "compliance_requirements",
+            "success_criteria",
+        ):
+            business[key] = str(request.form.get(key, "")).replace("\r\n", "\n").replace("\r", "\n").strip()[:8000]
+        provider = str(request.form.get("implementation_provider", "customer")).strip().lower()
+        config["operations"]["implementation_provider"] = provider if provider in {"customer", "partner", "oracle"} else "customer"
+        context, redirect_endpoint = build_current_price_page_context()
+        if context is None:
+            return redirect(url_for(redirect_endpoint)), 303
+        snapshot = build_ocvs_sdd_source_snapshot(
+            vm_rows=list(context.get("vm_rows") or []),
+            analysis=context,
+            customer_name=str(context.get("customer_name") or ""),
+            assessment_name=normalize_assessment_name(session.get("active_assessment_name", "")),
+            assessment_id=_clean_assessment_id(session.get("active_assessment_id", "")),
+            selected_rvtools_file=str(context.get("selected_rvtools_file") or session.get("selected_rvtools_file", "")),
+            source_vinfo_csv=str(context.get("source_vinfo_csv") or ""),
+            pricing_currency=str(context.get("pricing_currency") or "USD"),
+            iaas_discount_pct=float(context.get("iaas_discount_pct", 0.0) or 0.0),
+            ocvs_policy=dict(context.get("ocvs_policy") or {}),
+            ocvs_profile_choice=str(context.get("ocvs_profile_choice") or "best_fit"),
+            ocvs_commitment_term=str(context.get("ocvs_commitment_term") or "payg"),
+            ocvs_dr_nodes=int(context.get("ocvs_dr_nodes", 0) or 0),
+            ocvs_topology=str(context.get("ocvs_topology") or "single"),
+            step4_last_updated_at=str(context.get("step4_last_updated_at") or ""),
+        )
+        config["source_assessment_id"] = _clean_assessment_id(session.get("active_assessment_id", ""))
+        config["source_step4_updated_at"] = str(context.get("step4_last_updated_at") or "")
+        config["source_snapshot_hash"] = ocvs_sdd_snapshot_hash(snapshot)
+        config["last_saved_at"] = datetime.now().isoformat(timespec="seconds")
+        config, review_invalidated = invalidate_ocvs_sdd_review_if_stale(config, snapshot)
+        preview = build_ocvs_sdd_readiness(snapshot, config, scenario_id="ocvs")
+        config["validation_results"] = preview
+        app_state["sdd_configuration"] = config
+        app_state["sdd_source_snapshot"] = snapshot
+        save_app_state(app_state)
+        if review_invalidated:
+            flash("The reviewed SDD changed and must complete a new review cycle.", "warning")
+        flash("Draft SDD details saved.", "success")
+        return redirect(step4_tab_redirect("price")), 303
+
+    snapshot = app_state.get("sdd_source_snapshot") if isinstance(app_state.get("sdd_source_snapshot"), dict) else {}
+    current_step4_updated_at = str(app_state.get("step4_last_updated_at") or "")
+    frozen_names = sorted(str(name) for name in snapshot.get("selected_vm_names", [])) if snapshot else []
+    current_names = sorted(str(name) for name in app_state.get("selected_vm_names", []))
+    if snapshot and (
+        str(config.get("source_step4_updated_at") or "") != current_step4_updated_at
+        or frozen_names != current_names
+    ):
+        config = {**config, "source_snapshot_hash": "stale"}
+    payload = build_sdd_payload(snapshot, config) if snapshot else {}
+    try:
+        from scripts.generate_ocvs_sdd import (
+            GenerationError as OCVSSDDGenerationError,
+            generate as generate_ocvs_sdd,
+            validate_input as validate_ocvs_sdd_input,
+        )
+    except ImportError:
+        OCVSSDDGenerationError = ValueError
+        generate_ocvs_sdd = None
+        validate_ocvs_sdd_input = None
+    generator_errors = (
+        validate_ocvs_sdd_input(payload)
+        if payload and validate_ocvs_sdd_input is not None
+        else (["The document generation runtime is unavailable."] if payload else [])
+    )
+    status = build_ocvs_sdd_readiness(
+        snapshot,
+        config,
+        scenario_id="ocvs",
+        generator_errors=generator_errors,
+    )
+    if action == "validate_sdd":
+        config["validation_results"] = status
+        app_state["sdd_configuration"] = config
+        save_app_state(app_state)
+        if status["ready"]:
+            flash("Draft SDD validation passed. The document is ready to generate.", "success")
+        else:
+            flash(status["blocking_errors"][0], "error")
+        return redirect(step4_tab_redirect("price")), 303
+    if action != "generate_sdd" or not status["ready"]:
+        flash((status["blocking_errors"] or ["The Draft SDD is not ready to generate."])[0], "error")
+        return redirect(step4_tab_redirect("price")), 303
+
+    customer_name = str(payload.get("document", {}).get("customer_name") or "customer")
+    filename = build_export_filename(customer_name, "OCVS_SDD_Draft", "docx")
+    try:
+        if generate_ocvs_sdd is None:
+            raise OCVSSDDGenerationError("The document generation runtime is unavailable.")
+        with tempfile.TemporaryDirectory(prefix="ocvs-sdd-flask-") as temp_dir:
+            temp_root = Path(temp_dir)
+            input_path = temp_root / "input.json"
+            output_path = temp_root / secure_filename(filename)
+            input_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            report = generate_ocvs_sdd(
+                OCVS_SDD_TEMPLATE_PATH,
+                input_path,
+                output_path,
+                OCVS_SDD_SCHEMA_PATH,
+            )
+            document_bytes = output_path.read_bytes()
+        app.logger.info(
+            "Draft SDD generated assessment=%s snapshot=%s topology=%s vms=%s clusters=%s file=%s template_sha=%s input_sha=%s output_sha=%s warnings=%s",
+            config.get("source_assessment_id") or "unsaved",
+            config.get("source_snapshot_hash"),
+            snapshot.get("sizing", {}).get("topology"),
+            snapshot.get("scope", {}).get("selected_vm_count"),
+            snapshot.get("sizing", {}).get("target_cluster_count"),
+            filename,
+            report.get("source_template_checksum"),
+            report.get("input_data_checksum"),
+            report.get("generated_document_checksum"),
+            len(report.get("warnings_requiring_specialist_review") or []),
+        )
+        return send_file(
+            io.BytesIO(document_bytes),
+            as_attachment=True,
+            download_name=filename,
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            max_age=0,
+        )
+    except (OCVSSDDGenerationError, OSError, json.JSONDecodeError):
+        app.logger.exception("Draft SDD generation failed")
+        flash("The Draft SDD could not be generated. No source data or template was modified.", "error")
+        return redirect(step4_tab_redirect("price")), 303
 
 
 @app.route("/open-last-export", methods=["POST"])

@@ -1621,6 +1621,38 @@ class ReadinessTests(unittest.TestCase):
 
         self.assertFalse(summary["selected"]["pricing_available"])
 
+    def test_legacy_standard2_ocvs_profile_uses_bundled_host_rate(self) -> None:
+        summary = app_module.build_ocvs_price_summary(
+            vm_rows=[{"cpus": 60, "memory_gb": 800, "provisioned_gb": 1000}],
+            price_lookup={"Compute - Virtual Machine Standard - X7": 0.059334},
+            block_storage_unit_price=0.023715,
+            block_perf_unit_price=0.001581,
+            iaas_discount_pct=0.0,
+            selected_profile="BM.Standard2.52",
+        )
+
+        selected = summary["selected"]
+
+        self.assertTrue(selected["pricing_available"])
+        self.assertGreater(selected["host_monthly_cost"], 0.0)
+        self.assertGreater(selected["storage_monthly_cost"], 0.0)
+
+    def test_legacy_denseio2_ocvs_profile_uses_bundled_host_rate(self) -> None:
+        summary = app_module.build_ocvs_price_summary(
+            vm_rows=[{"cpus": 60, "memory_gb": 800, "provisioned_gb": 1000}],
+            price_lookup={"Compute - Virtual Machine Dense I/O - X7": 0.08},
+            block_storage_unit_price=0.023715,
+            block_perf_unit_price=0.001581,
+            iaas_discount_pct=0.0,
+            selected_profile="BM.DenseIO2.52",
+        )
+
+        selected = summary["selected"]
+
+        self.assertTrue(selected["pricing_available"])
+        self.assertGreater(selected["host_monthly_cost"], 0.0)
+        self.assertEqual(0.0, selected["storage_monthly_cost"])
+
     def test_optimized3_ocvs_profile_uses_standard_storage_model(self) -> None:
         summary = app_module.build_ocvs_price_summary(
             vm_rows=[{"cpus": 60, "memory_gb": 800, "provisioned_gb": 1000}],

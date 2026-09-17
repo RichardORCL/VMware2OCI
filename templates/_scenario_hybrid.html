@@ -24,6 +24,31 @@
     </dl>
   </section>
 
+  <section class="ocvs-topology" aria-labelledby="hybrid-topology-title" data-ocvs-topology-editor>
+    <div class="scenario-section-heading"><div><p class="native-section-label">Hybrid OCVS topology</p><h3 id="hybrid-topology-title">OCVS subset cluster layout</h3></div><span>Up to six target clusters</span></div>
+    <div class="topology-mode-options">
+      <label><input type="radio" name="hybrid_ocvs_topology" value="single" form="step4-form" {% if hybrid_ocvs_topology != 'multi' %}checked{% endif %}> Single-cluster SDDC</label>
+      <label><input type="radio" name="hybrid_ocvs_topology" value="multi" form="step4-form" {% if hybrid_ocvs_topology == 'multi' %}checked{% endif %}> Multi-cluster SDDC</label>
+    </div>
+    <div class="target-cluster-editor" data-topology-fields {% if hybrid_ocvs_topology != 'multi' %}hidden{% endif %}>
+      {% for index in range(6) %}
+        {% set target = hybrid_ocvs_target_clusters[index] if index < hybrid_ocvs_target_clusters|length else none %}
+        <fieldset class="target-cluster-card">
+          <legend><label><input type="checkbox" name="hybrid_ocvs_target_enabled_{{ index }}" value="1" form="step4-form" {% if target %}checked{% endif %}> {{ 'Unified Management' if index == 0 else 'Target cluster ' ~ (index + 1) }}</label></legend>
+          <label class="native-field"><span>Name</span><input name="hybrid_ocvs_target_name_{{ index }}" form="step4-form" value="{{ target.name if target else ('Unified Management' if index == 0 else 'OCVS Cluster ' ~ (index + 1)) }}"></label>
+          <label class="native-field"><span>OCVS profile</span><select name="hybrid_ocvs_target_profile_{{ index }}" form="step4-form"><option value="best_fit">Cost optimized</option>{% for profile in ocvs_profiles %}<option value="{{ profile.shape }}" {% if target and target.profile == profile.shape %}selected{% endif %}>{{ profile.shape }}</option>{% endfor %}</select></label>
+          <label class="native-field"><span>Source clusters</span><select name="hybrid_ocvs_target_sources_{{ index }}" form="step4-form" multiple size="{{ [selected_source_cluster_names|length, 4]|min }}">{% for source in selected_source_cluster_names %}<option value="{{ source }}" {% if target and source in target.source_clusters %}selected{% endif %}>{{ source }}</option>{% endfor %}</select></label>
+        </fieldset>
+      {% endfor %}
+    </div>
+    {% if hybrid_ocvs_multi_cluster %}
+      <div class="multi-cluster-results">
+        {% for cluster in hybrid_ocvs_multi_cluster.clusters %}<article><strong>{{ cluster.name }}</strong><span>{{ cluster.vm_count }} VMs</span><span>{{ cluster.selected.host_count }} hosts · {{ cluster.selected.shape }}</span><span>{{ format_storage_gb_and_tb(cluster.totals.storage_gb) }}</span><span>{{ pricing_symbol }}{{ "{:,.0f}".format(cluster.monthly_cost) }}/month</span></article>{% endfor %}
+        <article class="multi-cluster-results__total"><strong>Aggregate</strong><span>{{ hybrid_ocvs_multi_cluster.cluster_count }} clusters</span><span>{{ hybrid_ocvs_multi_cluster.total_hosts }} hosts</span><span>{{ format_storage_gb_and_tb(hybrid_ocvs_multi_cluster.total_storage_gb) }}</span><span>{{ pricing_symbol }}{{ "{:,.0f}".format(hybrid_ocvs_multi_cluster.total_monthly_cost) }}/month</span></article>
+      </div>
+    {% endif %}
+  </section>
+
   <section class="ocvs-assumptions hybrid-ocvs-assumptions" aria-labelledby="hybrid-ocvs-assumptions-title">
     <div class="scenario-section-heading">
       <div>

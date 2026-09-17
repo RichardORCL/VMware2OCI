@@ -1,0 +1,152 @@
+{
+  "schema_version": "1.0",
+  "document": {
+    "customer_name": "Northstar Robotics (Fictional)",
+    "customer_legal_name": "Northstar Robotics Test Company Ltd.",
+    "project_name": "Fictional OCVS Consolidation Draft",
+    "assessment_name": "Northstar Lab Assessment",
+    "assessment_date": "2026-09-15",
+    "rvtools_file_name": "northstar_fictional_rvtools.xlsx",
+    "generation_date": "2026-09-16",
+    "document_version": "0.1",
+    "version_comment": "Initial fictional draft for generator validation",
+    "document_author": "Alex Example-Fiction",
+    "document_author_email": "alex@fictional.invalid",
+    "confidentiality_classification": "Oracle Restricted — Employees Only",
+    "draft_status": true,
+    "copyright_year": 2026
+  },
+  "business": {
+    "customer_business_context": "Northstar Robotics is a fictional manufacturer evaluating a consolidated target platform for its lab workloads.",
+    "business_drivers": "Simplify platform operations, preserve VMware operating practices, and produce a validated capacity baseline.",
+    "solution_scope_summary": "Move the selected fictional assessment scope to one OCVS cluster in a single SDDC.",
+    "business_requirements": "Maintain agreed service windows and provide a documented transition plan.",
+    "technical_requirements": "Provide sufficient compute, memory, and block storage capacity for the selected workload.",
+    "compliance_requirements": "No regulated workloads are declared in this fictional test fixture.",
+    "success_criteria": "Sizing reconciles to the selected scope and the generated draft passes all automated validation checks."
+  },
+  "scope": {
+    "selected_vm_count": 120,
+    "powered_on_vm_count": 112,
+    "powered_off_vm_count": 8,
+    "selected_vcpu": 480,
+    "selected_ram_gb": 3072,
+    "selected_storage_tb": 48.5,
+    "operating_system_summary": "Windows Server and Linux test workloads",
+    "source_vcenters": ["fictional-vcenter-a"],
+    "source_datacenters": ["Fictional Lab DC"],
+    "source_clusters": [
+      {"name": "Fictional Production Cluster", "vm_count": 80, "powered_on": 76, "powered_off": 4, "vcpu": 320, "ram_gb": 2048, "storage_tb": 32.0},
+      {"name": "Fictional Services Cluster", "vm_count": 40, "powered_on": 36, "powered_off": 4, "vcpu": 160, "ram_gb": 1024, "storage_tb": 16.5}
+    ]
+  },
+  "sizing": {
+    "business_scenario": "ocvs",
+    "topology": "single",
+    "sddc_count": 1,
+    "target_cluster_count": 1,
+    "selected_profile": "Cost optimized",
+    "selected_shape": "BM.Optimized3.36",
+    "sizing_driver": "Memory",
+    "workload_nodes": 3,
+    "spare_nodes": 0,
+    "total_nodes": 3,
+    "workload_capacity_storage_tb": 60.7,
+    "storage_architecture": "OCI Block Volume (Block Storage)",
+    "vcpu_per_ocpu": 4,
+    "cpu_headroom_pct": 20,
+    "ram_headroom_pct": 20,
+    "storage_headroom_pct": 25,
+    "dense_vsan_usable_pct": 50,
+    "standard_storage_vpu": 10,
+    "commitment_term": "Pay as you go",
+    "summary_narrative": "A single consolidated OCVS cluster supports the selected fictional workload using OCI Block Volume."
+  },
+  "target_clusters": [
+    {
+      "name": "Unified Management",
+      "role": "unified_management",
+      "assigned_source_clusters": ["Fictional Production Cluster", "Fictional Services Cluster"],
+      "assigned_vm_count": 120,
+      "selected_profile": "Cost optimized",
+      "selected_shape": "BM.Optimized3.36",
+      "sizing_driver": "Memory",
+      "workload_nodes": 3,
+      "spare_nodes": 0,
+      "total_nodes": 3,
+      "storage_requirement_tb": 60.7,
+      "storage_architecture": "OCI Block Volume (Block Storage)",
+      "monthly_cost": null
+    }
+  ],
+  "network": {
+    "oci_region": "Fictional Region 1",
+    "tenancy_name_or_ocid": "fictional-tenancy",
+    "compartment_name_or_ocid": "fictional-ocvs-compartment",
+    "vcn_name": "fictional-ocvs-vcn",
+    "vcn_cidr": "198.51.100.0/24",
+    "sddc_cidr": "203.0.113.0/25",
+    "workload_cidrs": ["203.0.113.128/26"],
+    "management_cidrs": ["198.51.100.0/27"],
+    "vmotion_cidrs": ["198.51.100.32/27"],
+    "replication_cidrs": ["198.51.100.64/27"],
+    "hcx_cidrs": [],
+    "dns": ["192.0.2.53"],
+    "ntp": ["192.0.2.123"],
+    "connectivity": ["ipsec_vpn"],
+    "fastconnect": {"enabled": false},
+    "ipsec_vpn": {"enabled": true, "description": "Fictional draft VPN connectivity"},
+    "drg": "fictional-drg",
+    "hcx": {"enabled": false},
+    "segments": [
+      {"name": "Fictional Workload Segment", "cidr": "203.0.113.128/26", "purpose": "Fictional application workloads"}
+    ]
+  },
+  "security": {
+    "include_section": true,
+    "iam_model": "Federated customer IAM with least-privilege roles",
+    "encryption": "OCI-managed encryption keys for this fictional draft",
+    "logging": "OCI Logging with export to a fictional test SIEM",
+    "monitoring": "OCI Monitoring and service alarms",
+    "requirements": "Apply the fictional customer's approved security baseline."
+  },
+  "operations": {
+    "implementation_provider": "customer",
+    "operating_model": "Customer-managed operations with documented escalation paths",
+    "monitoring": "OCI Monitoring and VMware platform monitoring",
+    "backup": {"enabled": false, "description": "Not applicable"},
+    "disaster_recovery": {"enabled": false, "description": "Not applicable"},
+    "ha": {"enabled": true, "description": "Use the standard OCVS cluster availability design."},
+    "migration_method": "Customer-selected migration tooling",
+    "migration_window": "Fictional weekend maintenance window",
+    "downtime_tolerance": "Up to four hours for this fictional validation",
+    "validation_and_rollback": "Validate application health and revert the migration wave if acceptance checks fail.",
+    "transition_plan": "Customer operations accepts the platform after the documented validation checklist."
+  },
+  "commercial": {
+    "currency_code": "EUR",
+    "pricing_available": false,
+    "iaas_discount_pct": 0,
+    "commitment_term": "Pay as you go",
+    "monthly_cost": null,
+    "annual_cost": null,
+    "bom_rows": [
+      {"part_number": "Not available", "product_name": "OCVS fictional sizing result", "metric": "Host", "quantity": "3", "commitment_term": "Pay as you go", "storage_component": "OCI Block Volume", "pricing_availability": "Not available"}
+    ]
+  },
+  "delivery": {
+    "document_history": [{"version": "0.1", "author": "Alex Example-Fiction", "date": "September 16, 2026", "comment": "Initial fictional draft"}],
+    "reviewers": [{"name": "Robin Fiction", "email": "robin@fictional.invalid", "role": "Technical reviewer", "company": "Northstar Robotics Test Company Ltd."}],
+    "approvers": [],
+    "project_team": [{"name": "Sam Fiction", "email": "sam@fictional.invalid", "role": "Project lead", "company": "Northstar Robotics Test Company Ltd."}],
+    "environments": [{"name": "Fictional Production", "scope": "Selected assessment workload", "location": "Fictional Lab DC", "assessment_coverage": "120 selected VMs"}],
+    "assumptions": [{"statement": "All source inventory values are fictional and have been reviewed for generator QA.", "owner": "Technical reviewer", "status": "Review required"}],
+    "risks": [],
+    "raci": [],
+    "customer_obligations": [{"statement": "Provide approved network and security inputs before detailed design.", "owner": "Customer project lead", "due_date": "Before detailed design"}],
+    "implementation_scope": [{"activity": "Prepare OCVS landing configuration", "deliverable": "Validated configuration checklist", "owner": "Customer project team"}],
+    "transition_milestones": []
+  },
+  "section_flags": {"include_pricing": true, "include_raci": false, "include_risks": false, "include_transition": false, "include_oracle_lift": false},
+  "specialist_review_warnings": ["Network and security values are fictional and require replacement before customer use.", "Pricing is unavailable and no amount has been invented."]
+}
